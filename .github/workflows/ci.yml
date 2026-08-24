@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Byte-compile all modules (syntax gate)
+        run: |
+          set -e
+          for f in src/*.py; do
+            python -m py_compile "$f"
+          done
+          echo "✅ all $(ls src/*.py | wc -l | tr -d ' ') modules compile"
+
+      - name: Basic lint (compileall)
+        run: |
+          python -m compileall -q src
+          echo "✅ compileall clean"
+
+      - name: README sanity
+        run: |
+          test -f README.md && test -f README.en.md
+          echo "✅ README.md + README.en.md present"
