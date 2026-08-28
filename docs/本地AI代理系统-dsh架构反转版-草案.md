@@ -87,7 +87,7 @@
 
 - `gmail-cookie-reader`：Gmail OAuth + 复用本地 Edge 会话 + cookie 注入（2026-08-14 验证可读全文）+ `gmail_llm.py` 本地桥。
 - `outlook-cdp-reader`（2026-08-15 验证）。
-- 每日邮件摘要自动化 `automation-1786267403854`（UCSB+Gmail+Outlook，DAILY）已上线。
+- 每日邮件摘要自动化 `automation-1786267403854`（U-UNIV+Gmail+Outlook，DAILY）已上线。
 - 默认深度抓取；仅当用户点名某封才需额外深抓（已基本无缺口）。
 
 ---
@@ -143,7 +143,7 @@
 | 邮件 Outlook | outlook-cdp-reader | ✅ |
 | 邮件每日摘要 | 自动化 1786267403854（DAILY） | ✅ |
 | 本地模型 | local-ai（Ollama API） | ✅ |
-| UCSB 课表 | ucsb-data-bot + 自动化 1786173428851 | ✅ |
+| U-UNIV 课表 | ucsb-data-bot + 自动化 1786173428851 | ✅ |
 | 定时调度 | macos-launchd-scheduled-task（微信已修 04:00） | ✅ |
 | agent 交接 | handoff | ✅ |
 | DeepSeek Harness | github.com/deepseek-ai/deepseek-harness（**Node/TS，Cordis 框架**，MIT, dev preview） | ✅ M3 接缝已证通（OpenAI 兼容 HTTP 注册 ctx.llm） |

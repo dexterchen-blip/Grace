@@ -113,7 +113,7 @@
   - **路径 B — 复用本地 Edge 实时会话 + 浏览器 cookie 注入**（agent-browser 驱动真实 Chromium，2026-08-14 验证可读全文；免 Google Cloud）。
   - 轻量场景仍可走 cookie 摘要（~320 字片段）作为默认 / 降级。
 - **`gmail_llm.py` 本地桥**：把邮件上下文喂给本机 Ollama，邮箱永不上云端 LLM —— 正是"为下一代本地 LLM 准备"的钩子。
-- **每日邮件摘要自动化已上线**：`automation-1786267403854`（UCSB + 个人 Gmail + Outlook，FREQ=DAILY）每天跑、只报昨日、分"需处理 / 重要 / 可忽略营销"。Phase 1 直接复用，不重造。
+- **每日邮件摘要自动化已上线**：`automation-1786267403854`（U-UNIV + 个人 Gmail + Outlook，FREQ=DAILY）每天跑、只报昨日、分"需处理 / 重要 / 可忽略营销"。Phase 1 直接复用，不重造。
 - **升级机制（Q35 补充）**：夜间代理遇自己解决不了的问题（cookie 过期 / 解密失败等），把问题丢进 `exchange/escalations/`，交用户 + 助手协作解决（非阻塞，沿用提案队列哲学）。
 
 ---
@@ -149,7 +149,7 @@
 
 - **Phase 0（现在，M2 上唯一动作）**：✅ 修微信 launchd（已完成）。
 - **Phase 1（M5 到货后）**：
-  - **复用层（已建，直接接线）**：微信 / 邮件 / Gmail / Outlook / UCSB 摄入 skill + 两个自动化 + launchd 调度 + `local-ai`。见 §15。
+  - **复用层（已建，直接接线）**：微信 / 邮件 / Gmail / Outlook / U-UNIV 摄入 skill + 两个自动化 + launchd 调度 + `local-ai`。见 §15。
   - **绿地层（主要工作量）**：由 §16 的多模型分工推进——记忆系统 L0–L3 + **夜间巩固（Qwen3.5-35B-A3B Q6_K / llama.cpp）** → `exchange/` 总线落地 → Tauri 侧边栏 + dashboard → Megumin LoRA 挂载 → 学校文件夹写回闭环。
 - 全部设计**可移植**：M2 上验证的脚手架原样搬到 M5，只换模型。
 
@@ -161,7 +161,7 @@
 - **解密链路健康**：微信 4.1.11；passphrase 缓存完好；26/26 HMAC OK。
 - **launchd 铁律**：`StartInterval` 计 **FROM LOAD**，非"距上次跑完 N 秒"；重启清零计时器 → **长周期任务一律用 `StartCalendarInterval`**。
 - **隐私面最小原则**：邮件现已支持深度全文抓取（ 本地 Edge 实时会话注入），但轻量默认仍可走摘要；persona 模式永不污染事实记忆；`sensitive` 不出 outbox。
-- **摄入层资产现状（2026-08-15）**：微信 / Gmail / Outlook / UCSB GOLD 的抓取与摘要已在 skill 与自动化中建成，Phase 1 直接复用（详见 §15）。
+- **摄入层资产现状（2026-08-15）**：微信 / Gmail / Outlook / U-UNIV GOLD 的抓取与摘要已在 skill 与自动化中建成，Phase 1 直接复用（详见 §15）。
 
 ---
 
@@ -177,7 +177,7 @@
 | 邮件 Outlook / M365 | `outlook-cdp-reader`（live Edge CDP，2026-08-15 验证）                                      | ✅ 已建                                          |
 | 邮件每日摘要            | 自动化 `automation-1786267403854`（DAILY）                                                  | ✅ 已上线                                         |
 | 本地模型服务            | `local-ai`（Ollama API）                                                                 | （状态未知需要确定好）                                   |
-| UCSB GOLD 课表      | 自动化 `automation-1786173428851`（双日刷新）                                                   | （这个不用管到时候学校信息获取可以作为DLC制作但是在配置本地学校文件夹的时候要做好准备） |
+| U-UNIV GOLD 课表      | 自动化 `automation-1786173428851`（双日刷新）                                                   | （这个不用管到时候学校信息获取可以作为DLC制作但是在配置本地学校文件夹的时候要做好准备） |
 | 定时调度              | `macos-launchd-scheduled-task`（已纠正 StartInterval 铁律）                                   | ✅ 已建                                          |
 | agent 间交接         | `handoff`（压缩上下文交另一 agent 续做）                                                           | ✅ 已建                                          |
 
