@@ -38,9 +38,11 @@ API_PORT = 18300                     # 沙箱专用端口段（18000+），永�
 # ---------- 权重轨（LoRA）默认超参（Grace_v2 设计 §3/§4） ----------
 LORA = {
     "model": "mlx-community/Qwen3.8-27B-4bit",   # 沙箱 HF_HOME 只读引用宿主 27B；小模型实验用 setup_model.sh
-    "rank": 16,                     # 低秩约束：固定且小
-    "learning_rate": 1e-5,          # 极低学习率——"微调笔触"，不是"重画"
-    "iters": 200,                   # 微量训练
+    "rank": 8,                      # 2026-08-30 对齐 rem_v5 定稿(mlx 默认 rank8/scale20)
+    "scale": 20,
+    "learning_rate": 1e-5,          # 冷启动 lr；增量续训用 incr_lr=1e-6(15 iters)
+    "incr_lr": 1e-6,
+    "iters": 150,                   # 冷启动上限；实际动态: 冷启动 clamp(样本×20,60,150)/增量 15
     "batch_size": 1,                # 48GB 硬约束
     "anchor_ratio": 0.05,           # 锚点回放 5%（抗灾难性遗忘）
     "grad_checkpoint": True,        # gradient checkpointing（省显存）
