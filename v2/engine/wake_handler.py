@@ -15,7 +15,7 @@ import subprocess
 import time
 from datetime import datetime
 
-SIGNAL_FILE = "os.path.join(config.EXCHANGE, '.daytime')/sentinel-signal.json"
+SIGNAL_FILE = os.path.join(config.EXCHANGE, '.daytime', 'sentinel-signal.json')
 HANDLED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wake_handled.json")
 DAY_PLIST = "os.path.expanduser('~/Library/LaunchAgents/com.local-ai-agent.day-model.plist')"
 
