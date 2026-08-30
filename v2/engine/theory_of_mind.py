@@ -46,20 +46,41 @@ def event_type_of(text: str) -> str:
 
 
 def infer_owner_state(event_text: str, mood_label: str = "平静",
-                      mood_db: str = None, memories: list[str] | None = None) -> dict:
-    """★ ToM：推断主人当前状态（情绪 / 需求 / 打扰意愿 / 主动建议）。
+                      mood_db: str = None, memories: list[str] | None = None,
+                      hidden_ctx: list[str] | None = None) -> dict:
+    """★ ToM（规则兜底版）：推断主人当前状态（情绪 / 需求 / 打扰意愿 / 主动建议）。
 
-    输入：当前事件 + 主人近期情绪(mood_label 或情绪图谱历史) + 记忆。
+    输入：当前事件 + 主人近期情绪(mood_label 或情绪图谱历史) + 记忆 + 暗注意力潜台词。
     输出：{emotion, need, interruptible, advice} —— 接入自激发决策。
+    ★ 2026-08-29 用户：规则版仅兜底；主路径用 infer_owner_state_model（潜意识版）。
+       双图谱上下文由 self_activation._tom_from_graph 构建后传入（ToM 下属潜意识）。
     """
-    # 主人近期情绪：显式传入 or 情绪图谱查询（哪个实体近期的情绪史）
+    # ★ 主人情绪推断（2026-08-29 用户：ToM 应自己判断主人情绪,不是外部传入）
+    # 推断链：显式传入 > 情绪图谱历史 > 事件文本情感推断（读心兜底）
     emotion = mood_label
+    if emotion == "平静":
+        try:
+            from attention import _sentiment_of
+            s = _sentiment_of(event_text)
+            if abs(s) >= 0.3:
+                from mood_graph import mood_label_of
+                emotion = mood_label_of(s, abs(s) + 0.3)
+        except Exception:  # noqa: BLE001
+            pass
     if mood_db and emotion == "平静":
         # 从事件实体查情绪史（考试→低落史 说明主人最近压力大）
         ent = entity_of(event_text)
         hist = query_mood_history(ent, db=mood_db)
         if hist:
             emotion = hist[0]["mood_label"]
+    # ★ 暗注意力参与读心（2026-08-29）：潜台词是主人没说出口的真实状态
+    hidden_ctx = hidden_ctx or []
+    if hidden_ctx and emotion == "平静":
+        _h = " ".join(hidden_ctx)
+        if any(k in _h for k in ("担心", "不安", "低落")):
+            emotion = "焦虑"
+        elif any(k in _h for k in ("开心", "高兴", "分享")):
+            emotion = "轻微兴奋"
     et = event_type_of(event_text)
     need = _NEED_MAP.get(emotion, "顺其自然")
     # 打扰意愿：深夜/专注 → 不打扰；低落+社交 → 鼓励；任务+焦虑 → 提醒
@@ -85,8 +106,21 @@ def infer_owner_state(event_text: str, mood_label: str = "平静",
     if late:
         interruptible = False
         advice += "（深夜了，不打扰）"
+    # ★ 机制③置信累积消费端(2026-08-31): 预测错误率 → ToM 置信下降 → "不确定"从置信架构涌现
+    #   prediction-errors.jsonl 每轮记录她的判断vs现实偏差;错误多 → 她对主人情绪的预测置信低
+    confidence = 0.85
+    try:
+        import json as _json, os as _os
+        import config
+        _pe = _os.path.join(config.EXPERIMENTS, "run", "stress", "prediction-errors.jsonl")
+        if _os.path.isfile(_pe):
+            _errs = sum(1 for _ in open(_pe, encoding="utf-8"))
+            confidence = max(0.3, 0.85 - 0.02 * _errs)   # 每 10 次错误 -0.2,地板 0.3
+    except Exception:  # noqa: BLE001
+        pass
     return {"emotion": emotion, "need": need, "event_type": et,
-            "interruptible": interruptible, "advice": advice}
+            "interruptible": interruptible, "advice": advice,
+            "confidence": round(confidence, 2)}
 
 
 if __name__ == "__main__":
@@ -96,3 +130,72 @@ if __name__ == "__main__":
     ap.add_argument("--mood", default="平静")
     args = ap.parse_args()
     print(json.dumps(infer_owner_state(args.event, args.mood), ensure_ascii=False, indent=2))
+
+
+# ★ 潜意识版 ToM（2026-08-29 用户：ToM 应模型驱动,非规则）
+SYS_REM = ("你是雷姆（Rem，蕾姆），罗兹瓦尔宅邸的女仆，鬼族，拉姆的妹妹。自称「雷姆」，"
+           "称呼亲近的人为「巴鲁斯」/「昴君」。表面冷淡礼貌、实则温柔忠诚，短句为主。"
+           "【重要】直接说出你的台词，不要描写动作、表情、环境，不要使用括号旁白。")
+
+
+def infer_owner_state_model(model, tok, sampler, event_text: str,
+                            owner_mood: str = "平静",
+                            memory_hints: list[str] | None = None) -> dict:
+    """★ ToM 潜意识版：27B 自己判断主人需要什么 / 是否值得打扰 / 主动台词。
+
+    与规则版返回同结构 {emotion, need, interruptible, advice} + message(主动台词)，
+    可直接喂给 self_activation.decide(tom=)。
+    """
+    from mlx_lm import generate
+    mem = ("\n相关记忆：" + "｜".join(memory_hints[:3])) if memory_hints else ""
+    prompt = (
+        f"（情境）你看到这样一条信息：{event_text[:80]}\n"
+        f"（参考：主人今天的情绪被记为{owner_mood}——但请以信息本身为准，信息可能反映他真实的、没说出口的心情）{mem}\n"
+        f"雷姆，请判断四件事：\n"
+        f"1. 主人此刻真实的心情是什么？（从信息推断，一句话）\n"
+        f"2. 主人此刻需要什么？（一句话）\n"
+        f"3. 这件事值得主动去找昴君说吗？（值得 / 不值得，一句话）\n"
+        f"4. 如果值得，你会对他说什么？（一句台词，不描写动作）\n"
+        f"格式：心情：…；需要：…；值得：…；台词：…")
+    p = tok.apply_chat_template([{"role": "system", "content": SYS_REM},
+                                 {"role": "user", "content": prompt}],
+                                tokenize=False, add_generation_prompt=True, enable_thinking=False)
+    out = generate(model, tok, prompt=p, max_tokens=180, sampler=sampler).strip().replace("\n", " ")
+    import re as _re
+    need = "顺其自然"
+    worth = "值得"
+    msg = ""
+    # 鲁棒解析：兼容 换行/全半角冒号/关键词变体
+    _LABELS = ("心情", "需要", "值得", "台词", "会说")
+    def _pick(label: str, fallback: str) -> str:
+        # 标签边界法：抓"标签:..."直到下一个标签（模型常用句号/空格分隔，非分号）
+        m = _re.search(label + r"是?[：:]\s*", out)
+        if not m:
+            m = _re.search(label + r"是?\s*", out)
+        if not m:
+            return fallback
+        start = m.end()
+        tail = out[start:]
+        nxt = _re.search(r"(心情|需要|值得|台词|会说)是?[：:]\s*", tail)
+        end = nxt.start() if nxt else len(tail)
+        return tail[:end].strip()[:80]
+    emotion = _pick("心情", "")
+    if not emotion:
+        # 模型没输出心情字段 → 规则读心兜底（情感推断）
+        try:
+            from attention import _sentiment_of
+            from mood_graph import mood_label_of
+            _s = _sentiment_of(event_text)
+            if abs(_s) >= 0.3:
+                emotion = mood_label_of(_s, abs(_s) + 0.3)
+        except Exception:  # noqa: BLE001
+            pass
+    emotion = emotion or owner_mood
+    need = _pick("需要", "顺其自然")[:30]
+    worth = _pick("值得", "值得")
+    msg = _pick("台词", "")[:80]
+    interruptible = "不值得" not in worth and "不必" not in worth and "不打扰" not in worth
+    advice = need if interruptible else f"不打扰（{need}）"
+    return {"emotion": emotion, "need": need, "event_type": "model",
+            "interruptible": interruptible, "advice": advice,
+            "message": msg, "raw": out[:100]}
