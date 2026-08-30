@@ -24,8 +24,8 @@ from datetime import datetime
 
 SENTINEL_DIR = os.path.dirname(os.path.abspath(__file__))
 KEYWORDS_FILE = os.path.join(SENTINEL_DIR, "sentinel_keywords.json")   # ★ Grace 决定
-SIGNAL_FILE = os.path.join(config.EXCHANGE, '.daytime', 'sentinel-signal.json')
-DAYTIME = os.path.join(config.EXCHANGE, '.daytime')
+SIGNAL_FILE = os.path.join(os.environ.get('AIAGENT_EXCHANGE_DAYTIME', os.path.join(config.EXCHANGE, '.daytime')), 'sentinel-signal.json')
+DAYTIME = os.environ.get('AIAGENT_EXCHANGE_DAYTIME', os.path.join(config.EXCHANGE, '.daytime'))
 STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sentinel_state.json")   # 哨兵水位(只扫新增)
 
 

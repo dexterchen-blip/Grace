@@ -18,8 +18,8 @@ import os
 import time
 from datetime import datetime
 
-SIGNAL_FILE = os.path.join(config.EXCHANGE, '.daytime', 'sentinel-signal.json')
-PLAN_FILE = os.path.join(config.EXCHANGE, '.daytime', 'proactive-plan.json')
+SIGNAL_FILE = os.path.join(os.environ.get('AIAGENT_EXCHANGE_DAYTIME', os.path.join(config.EXCHANGE, '.daytime')), 'sentinel-signal.json')
+PLAN_FILE = os.path.join(os.environ.get('AIAGENT_EXCHANGE_DAYTIME', os.path.join(config.EXCHANGE, '.daytime')), 'proactive-plan.json')
 HANDLED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wake_handled.json")
 
 

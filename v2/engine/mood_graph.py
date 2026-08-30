@@ -7,7 +7,7 @@
 
 设计：**双图谱耦合**
   摄入事件时并行生成两张图谱，共享 event_id/实体：
-    ① 记忆图谱（事实侧）：事件 → 实体/关系（已有 35B 边缘抽取 / 规则主题抽取）
+    ① 记忆图谱（事实侧）：事件 → 实体/关系（规则主题抽取；V2.1 单模型 27B，不预留 35B 边缘抽取）
     ② 情绪图谱（感受侧）：实体 → 情绪边（什么 → 什么感受，强度 + 时间）
   耦合：同一事件的两个侧面通过 event_id + entity 连接；查询时"实体"同时返回
         记忆事实 + 情绪历史（考试 → 事实 + [焦虑0.7@8-27, 专注0.6@8-20]）。
@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS mood_graph(
   event_id TEXT DEFAULT '',      -- 耦合：与记忆图谱共享的事件 id
   trigger TEXT DEFAULT '',       -- 触发文本摘要
   edge_type TEXT DEFAULT 'emotion',  -- ★ 2026-08-28：emotion(半暗,影响语气) / hidden(全暗,暗注意力)
+  uncertainty REAL DEFAULT 0.2,    -- ★ 2026-08-31：再巩固标记(反馈 0.9/普通 0.2)
   source TEXT DEFAULT 'dual_graph');
 CREATE INDEX IF NOT EXISTS idx_mg_entity ON mood_graph(entity);
 CREATE INDEX IF NOT EXISTS idx_mg_event ON mood_graph(event_id);
@@ -179,7 +180,7 @@ def dual_graph_ingest(event_text: str, event_id: str = "", db: str = None,
     """★ 双图谱耦合摄入：同一事件并行生成 记忆图谱 + 情绪图谱（+ 暗注意力边）。
 
     ① 记忆侧：实体抽取（entity_of）→ 写记忆图谱边（本实现落 mood_graph 的实体边，
-       正式可接 35B 边缘抽取 entities/relations）
+       规则主题抽取；V2.1 不预留 35B（2026-08-29））
     ② 情绪侧：sentiment → 情绪标签 → 写情绪图谱边（add_mood_edge）
     ③ 暗注意力侧（2026-08-28）：高情绪事件自动推导潜台词边（add_hidden_edge）
     ④ 耦合：同一 event_id + 同一 entity —— 查询实体 = 记忆 + 情绪 + 暗注意力
