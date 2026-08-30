@@ -14,7 +14,7 @@
   --model   加载 5B 做兜底理解(慢)
 """
 from __future__ import annotations
-from engine import config
+import config
 import json
 import os
 import re

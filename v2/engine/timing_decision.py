@@ -12,7 +12,7 @@ v0 时机三因子（规则版）：
   ./run.sh .venv/bin/python3 v2/engine/timing_decision.py
 """
 from __future__ import annotations
-from engine import config
+import config
 import json
 import os
 import time

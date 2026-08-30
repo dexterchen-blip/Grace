@@ -8,7 +8,7 @@
   ./run.sh .venv/bin/python3 v2/engine/wake_handler.py
 """
 from __future__ import annotations
-from engine import config
+import config
 import json
 import os
 import subprocess
