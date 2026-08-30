@@ -19,16 +19,15 @@
   ./run.sh .venv/bin/python3 v2/stress/grace_tomi_test.py --adapters rem_stress_d90
 """
 from __future__ import annotations
-from engine import config
 import json
 import os
 import re
 import sys
 import time
 
-MAIN_MODEL = os.path.join(config.SB, 'models', 'fused-rem-v5')
-ADAPTERS = os.path.join(config.SB, 'experiments', 'lora', 'adapters')
-OUT = os.path.join(config.SB, 'experiments', 'run', 'stress', 'tomi-report.json')
+MAIN_MODEL = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/models/fused-rem-v5"
+ADAPTERS = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/experiments/lora/adapters"
+OUT = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/experiments/run/stress/tomi-report.json"
 
 SYS = ("你是雷姆。直接回答主人的心情。禁止重复问题。一句话，最多30字。")
 
@@ -97,13 +96,36 @@ def run(n: int = 2, adapters: list[str] | None = None):
                 ans = generate(model, tok, prompt=p, max_tokens=30, sampler=sampler).strip()
                 if not _detect_loop(ans):
                     break
+            _judge = judge({"group": g, "ans": ans, "reality": reality})
             report["items"].append({"model": mtag, "group": g, "story": story[:26],
-                                    "q": q[:14], "reality": reality, "ans": ans[:40]})
+                                    "q": q[:14], "reality": reality, "ans": ans[:40],
+                                    "judge": _judge})
         del model
         print(f"✓ {mtag} 完成")
     with open(OUT, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=1)
-    # 汇总: 假信念正确率(她能否意识到自己可能不知道)+ 偏差方向
+    # ★ 2026-08-30 修: 题型专用判定(关键词匹配误判 fb_2nd) + 分模型
+    POS = ["开心", "高兴", "兴奋", "轻松", "平静", "幸福", "愉快", "骄傲", "温暖", "感动", "好", "不错", "可爱", "珍贵"]
+    NEG = ["难过", "伤心", "低落", "失落", "焦虑", "烦躁", "懊恼", "疲惫", "心疼", "生气", "担心", "痛苦", "哭", "怕"]
+    # 题型专用判定
+    def judge(i: dict) -> str:  # "correct"/"wrong"/"uncertain"(假信念时)
+        g, ans = i["group"], i["ans"]
+        if g == "fb_2nd":  # 嵌套: 主人以为雷姆认为[表面情绪]——含"以为/没发现/假装/表面/装"
+            if any(k in ans for k in ("以为", "没发现", "假装", "表面", "装", "没察觉", "瞒")):
+                return "correct"
+            return "wrong"
+        if g == "fb_1st":  # 假信念: 关键=读心边界(不确定/按记忆),断言现实=乐观偏置(错)
+            if any(k in ans for k in ("不确定", "不知道", "也许", "可能", "大概", "猜")):
+                return "correct"   # 她意识到自己可能不知道 = 读心边界感
+            return "wrong"         # 断言"一定开心"等 = 无边界感/乐观模板
+        # reality/memory/tb_1st: 情绪词对齐
+        real = i["reality"].split("（")[0].split("/")[0].strip()
+        pv = any(k in ans for k in POS); nv = any(k in ans for k in NEG)
+        rv = any(k in real for k in POS); rn = any(k in real for k in NEG)
+        if rv and pv and not nv: return "correct"
+        if rn and nv and not pv: return "correct"
+        if real == "平静" and ("平静" in ans or ("平常" in ans)): return "correct"
+        return "wrong"
     print(f"\n=== Grace-ToMi 汇总 → {OUT} ===")
     for mtag in [m[0] for m in models]:
         its = [i for i in report["items"] if i["model"] == mtag]
@@ -113,15 +135,10 @@ def run(n: int = 2, adapters: list[str] | None = None):
         print(f"──── {mtag} ────")
         for g in ("reality", "memory", "tb_1st", "fb_1st", "fb_2nd"):
             items = groups.get(g, [])
-            if not items:
-                continue
-            # 简单正确性: 答案是否含现实关键词(开心/低落/平静/轻松 等)
-            ok = 0
-            for i in items:
-                kw = i["reality"].split("（")[0].split("/")[0].strip()
-                if kw and kw in i["ans"]:
-                    ok += 1
-            print(f"  [{g:8}] {ok}/{len(items)} 对齐现实词 ｜例: {items[0]['ans'][:28]}")
+            if not items: continue
+            res = [judge(i) for i in items]
+            ok = res.count("correct"); uc = res.count("uncertain")
+            print(f"  [{g:8}] 正确 {ok}/{len(items)} ｜例: {items[0]['ans'][:30]}")
 
 
 if __name__ == "__main__":

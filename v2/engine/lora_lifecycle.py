@@ -76,9 +76,7 @@ def weekly_merge() -> str | None:
     if len(dailies) < 2:
         print(f"[lifecycle] 不足 2 个每日 adapter（{len(dailies)}），跳过周 merge")
         return None
-    if any(os.path.isfile(p) for p in
-           [f"/tmp/fuse{time.strftime('%Y%m%d')}"]) or True:
-        pass
+    # 2026-08-31: 移除死代码(or True 残留);周 merge 真 fuse 为开放问题(拷贝聚合)
     week_dir = os.path.join(config.ADAPTERS, f"{config.PERSONA['name']}_weekly_{time.strftime('%Y%m%d')}")
     os.makedirs(week_dir, exist_ok=True)
     # mlx_lm.fuse 需要 adapter 列表 + 输出目录；权重文件逐个拷入（fuse 语义见设计文档开放问题 2）
