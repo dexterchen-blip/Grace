@@ -39,7 +39,7 @@ START_DAY = datetime(2026, 8, 28)   # 入学后（虚拟日历）
 
 # ★ 2026-08-28：人格底模升级为 fused-rem-v5（rem_v5 融合，完整雷姆味）
 #   压力测试 = 在已有人格上继续每日微调，验证「记忆在完整雷姆上持续塑造」。
-MAIN_MODEL = os.path.join(config.SB, 'models', 'fused-rem-v5')
+MAIN_MODEL = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/models/fused-rem-v5"
 
 
 def day_ts(day: int, h: int = 10) -> float:
@@ -116,7 +116,7 @@ def _mood_label_of(day: int) -> str:
 
 
 # 正式本地 AI 系统 L0 目录（只读）
-OFFICIAL_L0 = os.environ.get('AIAGENT_PROD_L0', os.path.join(config.SB, 'memory', 'L0_raw'))
+OFFICIAL_L0 = "/Users/cz/WorkBuddy/skills find and make/local-ai-agent/memory/L0_raw"
 
 
 def ingest_official_l0() -> int:
@@ -267,9 +267,9 @@ def extract_l3_samples(k: int = 6, db: str | None = None) -> list[str]:
             if not event:
                 continue
             if self_eval:
-                t = f"（雷姆的回忆）{event[:60]}。{self_eval}"
+                t = f"{event[:60]}。{self_eval}"
             else:
-                t = f"（雷姆的回忆）那天的事，{event[:60]}。雷姆记住了。"
+                t = f"那天的事，{event[:60]}。雷姆记住了。"
             out.append(t)
     except Exception as e:  # noqa: BLE001
         print(f"  [l3-samples] {e}")
@@ -300,7 +300,7 @@ def extract_graph_samples(k: int = 8, db: str | None = None) -> list[str]:
             if _key in seen:
                 continue
             seen.add(_key)
-            _t = f"（雷姆记得）主人{entity}的事：{trigger[:30]}。雷姆记得主人当时{mood}。"
+            _t = f"主人{entity}的事：{trigger[:30]}。雷姆记得主人当时{mood}。"
             out.append(_t)
             if unc >= 0.7:
                 out.append(_t)          # ★ 高不确定记忆权重×2(再巩固)
@@ -426,7 +426,7 @@ def train_27b(samples: list[str], adapter_name: str,
                 if _r.get("message") and _r.get("situation"):
                     f.write(json.dumps({"messages": [
                         {"role": "system", "content": sys_p},
-                        {"role": "user", "content": f"（情境）{_r['situation'][:80]}"},
+                        {"role": "user", "content": _r["situation"][:80]},
                         {"role": "assistant", "content": _r["message"][:120]}]}, ensure_ascii=False) + "\n")
                     _n += 1
             if _n:
@@ -779,7 +779,7 @@ def main():
                         except Exception:  # noqa: BLE001
                             pass
                         # 反馈学习样本 = 数据对(判断情境→现实),非句式
-                        _fb = f"（情境）{m['text'][:30]}。（现实）主人其实{_real}。"
+                        _fb = f"{m['text'][:30]}。主人其实{_real}。"
                         if _fb not in _cog_seen:
                             _cog_seen.add(_fb)
                             feedback.append((_fb, _w))   # (文本, PE 权重)
@@ -790,11 +790,11 @@ def main():
                 _atxt = att.get("attention_text", "")
                 if _atxt and _atxt not in _cog_seen:
                     _cog_seen.add(_atxt)
-                    cognition.append(f"（雷姆注意到）{_atxt[:50]}")
+                    cognition.append(_atxt[:50])
                 _reason = r.get("reason", "")
                 if _reason and _reason not in _cog_seen:
                     _cog_seen.add(_reason)
-                    cognition.append(f"（雷姆想了想）{_reason[:50]}")
+                    cognition.append(_reason[:50])
                 if r["activate"]:
                     _key = m["text"].strip()[:50]
                     if _key not in _proactive_seen:
