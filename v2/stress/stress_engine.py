@@ -819,6 +819,17 @@ def main():
                     _pos = ("开心", "兴奋", "轻微兴奋", "快乐", "愉悦")
                     _bel_cat = "neg" if _believed in _neg else ("pos" if _believed in _pos else "neu")
                     _real_cat = "neg" if _real in _neg else ("pos" if _real in _pos else "neu")
+                    # ★2026-09-01 日常 ToMi(用户: 让压测时的 Grace 直接测 ToMi): 每次 ToM 判断全量落盘(对+错)
+                    #   90 天判断正确率曲线 = 她自然状态下的"生活版 ToMi"(真实场景,非人工题)
+                    #   旧数据兼容: 早期只记错(无 correct 字段)→ 视为 False
+                    try:
+                        _cerr = os.path.join(STRESS_ROOT, "prediction-errors.jsonl")
+                        with open(_cerr, "a", encoding="utf-8") as _f:
+                            _f.write(json.dumps({"day": day, "believed": _believed, "real": _real,
+                                                 "correct": _bel_cat == _real_cat,
+                                                 "pe": round(_pe, 2), "w": _w}, ensure_ascii=False) + "\n")
+                    except Exception:  # noqa: BLE001
+                        pass
                     if _bel_cat != _real_cat and _bel_cat != "neu":
                         # ① PE 强度 = |强度差| (误差大→学习强)
                         _pe = abs(_s) + (0.3 if _bel_cat == "neg" else 0.0)
@@ -839,14 +850,7 @@ def main():
                             _con.commit(); _con.close()
                         except Exception:  # noqa: BLE001
                             pass
-                        # ③ 置信累积: 预测错误计数(ToM 置信随错误率下降的数据基础)
-                        _cerr = os.path.join(STRESS_ROOT, "prediction-errors.jsonl")
-                        try:
-                            with open(_cerr, "a", encoding="utf-8") as _f:
-                                _f.write(json.dumps({"day": day, "believed": _believed, "real": _real,
-                                                     "pe": round(_pe, 2), "w": _w}, ensure_ascii=False) + "\n")
-                        except Exception:  # noqa: BLE001
-                            pass
+                        # (2026-09-01: prediction-errors 改到 if 外全量记录——每次 ToM 判断都记,对+错)
                         # 反馈学习样本 = 数据对(判断情境→现实),非句式
                         _fb = f"{m['text'][:30]}。主人其实{_real}。"
                         if _fb not in _cog_seen:
