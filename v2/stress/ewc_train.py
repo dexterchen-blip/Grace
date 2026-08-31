@@ -25,6 +25,7 @@ import mlx.core as mx
 import mlx.optimizers as optim
 
 from mlx_lm.lora import linear_to_lora_layers, load, load_dataset, train
+from mlx_lm.tuner.datasets import CacheDataset
 from mlx_lm.tuner.trainer import TrainingArgs, default_loss
 
 
@@ -47,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--resume-adapter-file", default=None)
     ap.add_argument("--grad-accumulation-steps", type=int, default=1)
+    ap.add_argument("--test", action="store_true", default=False)  # mlx load_dataset 检查该字段
     ap.add_argument("--lora-rank", type=int, default=8)
     ap.add_argument("--lora-scale", type=float, default=20.0)
     # EWC 专属
@@ -95,17 +97,21 @@ def main() -> None:
                 fisher[name] = mx.array(raw[name])
         print(f"EWC: 加载 {len(fisher)}/{len(tp)} 个 ToM 突触重要性")
 
-    # 4. 数据集 + 优化器
-    train_dataset = load_dataset(args, tokenizer)
+    # 4. 数据集(CacheDataset 包装,与 mlx_lm.lora.train_model 一致)+ 优化器
+    train_dataset, valid_dataset, _ = load_dataset(args, tokenizer)
+    train_dataset = CacheDataset(train_dataset)
+    valid_dataset = CacheDataset(valid_dataset) if len(valid_dataset) > 0 else None
     optimizer = optim.Adam(learning_rate=args.learning_rate)
 
     # 5. EWC loss = CE + λ/2 * Σ F θ²
     def ewc_loss(m, batch, lengths):
         ce, ntoks = default_loss(m, batch, lengths)
-        ewc = mx.array(0.0)
-        if fisher:
-            _tp = _flat(m.trainable_parameters())
-        ewc = sum((fisher[n] * p * p).sum() for n, p in _tp.items() if n in fisher)
+        if args.ewc_lambda == 0.0 or not fisher:
+            return ce, ntoks
+        # ★ mx.add_n 合并 248 个 EWC 项(避免独立 sum 展开成巨大计算图撑爆 Metal 内存)
+        terms = [(fisher[n] * p * p).sum()
+                 for n, p in _flat(m.trainable_parameters()).items() if n in fisher]
+        ewc = mx.stack(terms).sum() if terms else mx.array(0.0)
         return ce + args.ewc_lambda * ewc, ntoks
 
     # 6. 训练
@@ -124,7 +130,8 @@ def main() -> None:
         grad_accumulation_steps=args.grad_accumulation_steps,
     )
     mx.random.seed(args.seed)
-    train(model, optimizer, train_dataset, args=training_args, loss=ewc_loss)
+    train(model, optimizer, train_dataset, val_dataset=valid_dataset,
+          args=training_args, loss=ewc_loss)
     model.save_weights(str(adapter_path / "adapters.safetensors"))
     print("Saved final weights(EWC)")
 
