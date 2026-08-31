@@ -470,18 +470,37 @@ def train_27b(samples: list[str], adapter_name: str,
                 print(f"    [proactive] 并入主动消息样本 {_n} 条（她会主动关心主人）")
 
     adapter = os.path.join(config.ADAPTERS, adapter_name)
-    cmd = [sys.executable, "-m", "mlx_lm.lora",
-           "--model", MAIN_MODEL, "--train", "--data", ds_dir,
-           "--adapter-path", adapter,
-           "--batch-size", "1", "--iters", str(incr_iters if prev_adapter else max(60, min(150, len(samples) * 20))),
-           "--learning-rate", incr_lr if prev_adapter else "1e-5",
-           "--num-layers", "16", "--max-seq-length", "2048",
-           "--grad-checkpoint",                       # 2026-08-28：16层 27B 必开，峰值 20.7GB 防 Metal OOM
-           "--steps-per-report", "20", "--steps-per-eval", "50",
-           "--save-every", "50", "--seed", "42"]
-    if prev_adapter:
-        cmd += ["--resume-adapter-file",
-                os.path.join(config.ADAPTERS, prev_adapter, "adapters.safetensors")]
+    # ★ 2026-09-01 EWC 突触巩固(用户:做B): GRACE_EWC=1 → ewc_train.py(保护 ToM 能力权重, 防记忆样本覆盖嵌套读心)
+    _ewc = os.environ.get("GRACE_EWC") == "1"
+    if _ewc:
+        _iters = incr_iters if prev_adapter else max(60, min(150, len(samples) * 20))
+        cmd = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "ewc_train.py"),
+               "--model", MAIN_MODEL, "--train", "--data", ds_dir,
+               "--adapter-path", adapter,
+               "--batch-size", "1", "--iters", str(_iters),
+               "--learning-rate", incr_lr if prev_adapter else "1e-5",
+               "--num-layers", "16", "--max-seq-length", "2048",
+               "--grad-checkpoint",
+               "--steps-per-report", "20", "--steps-per-eval", "50",
+               "--save-every", "50", "--seed", "42",
+               "--fisher-file", os.path.join(os.path.dirname(os.path.abspath(__file__)), "tom-fisher.json"),
+               "--ewc-lambda", os.environ.get("GRACE_EWC_LAMBDA", "1e-3")]
+        if prev_adapter:
+            cmd += ["--resume-adapter-file",
+                    os.path.join(config.ADAPTERS, prev_adapter, "adapters.safetensors")]
+    else:
+        cmd = [sys.executable, "-m", "mlx_lm.lora",
+               "--model", MAIN_MODEL, "--train", "--data", ds_dir,
+               "--adapter-path", adapter,
+               "--batch-size", "1", "--iters", str(incr_iters if prev_adapter else max(60, min(150, len(samples) * 20))),
+               "--learning-rate", incr_lr if prev_adapter else "1e-5",
+               "--num-layers", "16", "--max-seq-length", "2048",
+               "--grad-checkpoint",                       # 2026-08-28：16层 27B 必开，峰值 20.7GB 防 Metal OOM
+               "--steps-per-report", "20", "--steps-per-eval", "50",
+               "--save-every", "50", "--seed", "42"]
+        if prev_adapter:
+            cmd += ["--resume-adapter-file",
+                    os.path.join(config.ADAPTERS, prev_adapter, "adapters.safetensors")]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
     ok = r.returncode == 0 and "Saved final weights" in r.stdout
     return {"ok": ok, "samples": len(samples), "adapter": adapter,
