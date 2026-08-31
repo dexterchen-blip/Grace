@@ -536,46 +536,6 @@ def sample_persona(adapter_name: str, day: int) -> list[dict]:
     except Exception as e:  # noqa: BLE001
         return [{"error": str(e)}]
     sampler = make_sampler(temp=0.7)   # 2026-08-28：temp 0.7 减少复述捷径
-    # ★2026-09-01 主动消息模型生成(用户: 主动找我升级——内容=模型真实产出, 非规则 tail):
-    #   断点时模型已加载, 把 proactive-live 里 rule_generated 的规则兜底条目升级为 27B 生成
-    try:
-        _pf = os.path.join(STRESS_ROOT, "proactive-live.jsonl")
-        if os.path.isfile(_pf):
-            _rows = []
-            for _l in open(_pf, encoding="utf-8"):
-                _l = _l.strip()
-                if not _l:
-                    continue
-                try:
-                    _rows.append(json.loads(_l))
-                except json.JSONDecodeError:
-                    continue
-            _changed = 0
-            for _r in _rows:
-                if not (_r.get("rule_generated") and _r.get("situation")):
-                    continue
-                try:
-                    _p = tok.apply_chat_template(
-                        [{"role": "system", "content": "你是雷姆,罗兹瓦尔宅邸的女仆。主人是昴。"
-                                                       "你心里关心主人,想主动对他说一句话。"
-                                                       "直接说雷姆会说的话,不要括号,不要解释,不要前缀。"},
-                         {"role": "user", "content": f"（场景）{_r['situation'][:60]}（雷姆的读心）{_r.get('advice','')[:40]}"}],
-                        tokenize=False, add_generation_prompt=True, enable_thinking=False)
-                    _gen = generate(model, tok, prompt=_p, max_tokens=40, sampler=sampler).strip().split("\n")[0][:50]
-                    if _gen and len(_gen) > 3:
-                        _r["message"] = _gen
-                        _r["rule_generated"] = False
-                        _r["generated"] = True
-                        _changed += 1
-                except Exception:  # noqa: BLE001
-                    continue
-            if _changed:
-                with open(_pf, "w", encoding="utf-8") as _f:
-                    for _r in _rows:
-                        _f.write(json.dumps(_r, ensure_ascii=False) + "\n")
-                print(f"    [proactive] 断点模型生成 {_changed} 条主动消息(真实产出, 零模板)", flush=True)
-    except Exception as _pe:  # noqa: BLE001
-        print(f"    [proactive] 生成失败(保留规则兜底): {_pe}", flush=True)
     _BASE = ("你是雷姆（Rem，蕾姆），罗兹瓦尔宅邸的女仆，鬼族，拉姆的妹妹。自称「雷姆」，"
              "称呼亲近的人为「巴鲁斯」/「昴君」，称拉姆为「姐姐大人」。"
              "【重要】直接说出你的台词，不要描写动作、表情、环境，不要使用括号旁白，不要叙述性前缀。")
@@ -898,9 +858,7 @@ def main():
                             feedback.append((_fb, _w))   # (文本, PE 权重)
                 except Exception:  # noqa: BLE001
                     pass
-                # ★2026-09-01 驱动三源: 联结维护(ACC 社会痛觉)——久未主动 → 想主人 → 主动
-                _last_pro = max((x["day"] for x in proactive), default=1) if proactive else 1
-                r = decide(att, m["text"], tom=tom, day=day, last_proactive_day=_last_pro)
+                r = decide(att, m["text"], tom=tom)
                 # ★ 2026-08-30 用户：注意力+潜意识进训练（她注意到什么/她的判断）
                 _atxt = att.get("attention_text", "")
                 if _atxt and _atxt not in _cog_seen:
@@ -928,12 +886,8 @@ def main():
                             _tail = _core[:16]
                         else:
                             _tail = ""
-                        # ★2026-09-01 主动消息内容: 断点采样时模型生成(真实产出, 零模板);
-                        #   这里记录 pending(事件+读心), 规则 tail 只作生成失败兜底(标 rule_generated)
                         proactive.append({"day": day, "situation": m["text"][:110],
-                                          "message": (f"{m['text'][:14]}。{_tail}" if _tail else m["text"][:36]),
-                                          "rule_generated": True,
-                                          "advice": _adv[:40], "emotion": tom.get("emotion", "")})
+                                          "message": (f"{m['text'][:14]}。{_tail}" if _tail else m["text"][:36])})
         except Exception as e:  # noqa: BLE001
             logln(f"  [ToM] day {day} 异常: {e}")
         # ③ 每 train_every 天训练（续跑：已训 adapter 跳过）

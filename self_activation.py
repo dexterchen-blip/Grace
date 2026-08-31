@@ -52,22 +52,16 @@ def _mood_signal(attention: dict) -> dict:
     return sig
 
 
-def evaluate(attention: dict, event_text: str, day: int | None = None,
-             last_proactive_day: int | None = None) -> dict:
-    """自激发评估 → ★2026-09-01 驱动三源(脑科学版, 用户: 主动找我要升级):
-    ①事件价值(SEEKING/多巴胺) = 注意力显著度 + 情绪信号 + 时限(已有)
-    ②联结价值(催产素×多巴胺奖励) = 与主人的记忆关联深度(越亲密越主动)
-    ③联结维护(ACC 社会痛觉) = 久未主动 → "想主人了" → 主动(无事件也主动)
+def evaluate(attention: dict, event_text: str) -> dict:
+    """自激发评估：注意力显著度 + 情绪信号 + 记忆关联 → 是否值得激活。
 
     2026-08-27 修：memory_driven 只由「时限/重要词」触发（截止/明天/due 等），
     仅有关联记忆不算触发源——否则夜班摄入的每条内容都会自激发（99% 话痨）。
-    2026-09-01：联结维护单独成源（久未主动→基准提升），不靠时限词。
     """
     sal = attention["salience"]
     sig = _mood_signal(attention)
     mem_hint = bool(_MEMORY_HINTS.search(event_text))      # 时限/重要词 → 记忆驱动触发
-    links = attention.get("memory_links") or []
-    has_links = bool(links)            # 有记忆关联 → 只加注意力分
+    has_links = bool(attention["memory_links"])            # 有记忆关联 → 只加注意力分
     triggers = []
     if sal >= TRIGGER["attention_driven"]["threshold"]:
         triggers.append("attention_driven")
@@ -75,7 +69,7 @@ def evaluate(attention: dict, event_text: str, day: int | None = None,
         triggers.append("mood_driven")
     if mem_hint:
         triggers.append("memory_driven")
-    # ① 事件价值：显著度 + 情绪信号 + 时限
+    # 激活分：显著度 + 情绪信号 + 记忆关联
     score = sal
     if sig["low"]:
         score += 0.15            # 低落 → 更该主动关心
@@ -83,76 +77,26 @@ def evaluate(attention: dict, event_text: str, day: int | None = None,
         score += 0.1             # 兴奋 → 更想分享
     if mem_hint:
         score += 0.45            # 时限/重要事项 → 该做的事，不依赖情绪也该激活
-    # ② 联结价值(催产素×多巴胺): 与主人的记忆关联越深 → 越主动(社交奖励)
-    if has_links:
-        score += 0.1 + 0.05 * min(2, len(links))   # 1条关联+0.1, 2条以上+0.2
-    # ③ 联结维护(ACC 社会痛觉): 久未主动 → "想主人了" → 提升基准
-    if last_proactive_day is not None and day is not None:
-        gap = day - last_proactive_day
-        if gap >= 3:
-            score += min(0.3, 0.1 * gap)    # 3天没主动 +0.3, 之后每多1天+0.1(封顶0.3)
-            triggers.append("bond_maintenance")
+    elif has_links:
+        score += 0.1             # 普通记忆关联 → 轻加分（有相关记忆，但非紧急）
     return {"score": round(min(1.0, score), 2), "triggers": triggers,
             "mood_signal": sig, "mem_hit": mem_hint, "has_links": has_links}
 
 
-def _tom_from_graph(event_text: str, mood_db: str | None = None,
-                    owner_mood: str = "平静") -> dict:
-    """★ 潜意识内部步骤（2026-08-29 用户：ToM 下属潜意识模块，且紧密链接双轨图谱）。
-
-    双图谱 → 主人状态上下文：
-      ① 事件实体 → 情绪图谱史（主人对该实体的情绪底色）
-      ② 暗注意力（query_hidden）→ 主人没说出口的潜台词
-      ③ 显式传入/推断的主人当天情绪
-    输出 ToM 可用的上下文 {emotion, hidden_ctx, owner_mood}。
-    """
-    ctx = {"emotion": owner_mood, "hidden_ctx": [], "graph_hit": False}
-    if not mood_db:
-        return ctx
-    try:
-        from engine.mood_graph import entity_of, query_mood_history, query_hidden
-        ent = entity_of(event_text)
-        hist = query_mood_history(ent, db=mood_db)
-        if hist:
-            ctx["emotion"] = hist[0]["mood_label"]      # ① 图谱情绪史（主人底色）
-            ctx["graph_hit"] = True
-        ctx["hidden_ctx"] = query_hidden(ent, db=mood_db)  # ② 暗注意力潜台词
-    except Exception:  # noqa: BLE001
-        pass
-    return ctx
-
-
-def decide(attention: dict, event_text: str, decide_fn=None, tom: dict | None = None,
-           graph_db: str | None = None, day: int | None = None,
-           last_proactive_day: int | None = None) -> dict:
-    """模型自激发决策入口（2026-08-28：ToM 修饰是否主动；2026-08-29：ToM 下属潜意识+接双图谱；
-        2026-09-01：驱动三源(事件价值+联结价值+联结维护)）。
+def decide(attention: dict, event_text: str, decide_fn=None, tom: dict | None = None) -> dict:
+    """模型自激发决策入口（2026-08-28：ToM 修饰是否主动）。
 
     decide_fn(attention, event) -> {"activate": bool, "action": str, "reason": str}
       默认规则骨架：score ≥ 0.5 激活；可注入 27B 生成（模型自己判断）。
     tom: theory_of_mind.infer_owner_state() —— 主人是否愿被打扰/需要什么。
        interruptible=False → 强制不打扰（真人：读懂对方再决定是否打扰）。
-    graph_db: 双图谱库（l2.db）—— 若给，先查图谱构建主人状态上下文再走 ToM
-              （ToM 紧密链接双轨图谱：情绪史+暗注意力做读心依据）。
-    day/last_proactive_day: 联结维护源(ACC 社会痛觉)——久未主动 → 主动。
     """
-    ev = evaluate(attention, event_text, day=day, last_proactive_day=last_proactive_day)
+    ev = evaluate(attention, event_text)
     if decide_fn is not None:
         try:
             return decide_fn(attention, event_text)
         except Exception:  # noqa: BLE001
             pass
-    # ★ ToM 下属潜意识：图谱上下文 → ToM（未显式传 tom 时）
-    if tom is None and graph_db is not None:
-        try:
-            from engine.theory_of_mind import infer_owner_state
-            gc = _tom_from_graph(event_text, graph_db,
-                                 owner_mood=ev.get("mood_signal", {}).get("label", "平静"))
-            tom = infer_owner_state(event_text, mood_label=gc["emotion"],
-                                    mood_db=graph_db,
-                                    hidden_ctx=gc["hidden_ctx"])
-        except Exception:  # noqa: BLE001
-            tom = None
     activate = ev["score"] >= 0.5
     if tom is not None and not tom.get("interruptible", True):
         activate = False
