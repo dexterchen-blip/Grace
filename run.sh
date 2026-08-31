@@ -42,5 +42,6 @@ exec env -i \
   HF_HUB_OFFLINE=1 \
   GRACE_EWC="${GRACE_EWC:-0}" \
   GRACE_EWC_LAMBDA="${GRACE_EWC_LAMBDA:-1e-3}" \
+  GRACE_SLEEP_DELTA="${GRACE_SLEEP_DELTA:-0.03}" \
   LANG="en_US.UTF-8" LC_ALL="en_US.UTF-8" TZ="Asia/Shanghai" \
   "$@"

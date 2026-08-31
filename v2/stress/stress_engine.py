@@ -494,7 +494,8 @@ def train_27b(samples: list[str], adapter_name: str,
                  os.path.join(os.path.dirname(os.path.abspath(__file__)), "ewc_consolidate.py"),
                  "--adapter", os.path.join(adapter, "adapters.safetensors"),
                  "--fisher", os.path.join(os.path.dirname(os.path.abspath(__file__)), "tom-fisher.json"),
-                 "--alpha", os.environ.get("GRACE_EWC_ALPHA", "0.7")]
+                 "--alpha", os.environ.get("GRACE_EWC_ALPHA", "0.7"),
+                 "--delta", os.environ.get("GRACE_SLEEP_DELTA", "0.03")]
         rc = subprocess.run(_cons, capture_output=True, text=True, timeout=300)
         ok = ok and rc.returncode == 0
         print(f"  ↪ EWC 突触回缩: {'✅' if rc.returncode == 0 else '❌'} {rc.stdout.strip()[-60:]}", flush=True)
@@ -638,6 +639,8 @@ def main():
     ap.add_argument("--days", type=int, default=90)
     ap.add_argument("--train-every", type=int, default=10)
     ap.add_argument("--sample-every", type=int, default=15)
+    ap.add_argument("--reset-interval", type=int, default=40,
+                    help="★神经新生重置周期(天,默认40=定量估算的最佳不睡天数;0=关闭)")
     ap.add_argument("--start", type=int, default=1)
     ap.add_argument("--ingest-official", action="store_true",
                     help="启动时完全摄入正式本地 AI 系统 L0（先验记忆基底）")
@@ -895,7 +898,12 @@ def main():
                     except Exception:  # noqa: BLE001
                         pass
                 adapter_name = f"{adapter_base}_d{day}"
-                prev = _latest_adapter(adapter_base, day)
+                # ★2026-09-01 神经新生式重置(脑科学: 海马新生神经元整合→重新布线):
+                #   每 reset_interval 天从 base 冷启动(不续训),外挂记忆保留 → 持续可学习,治 30 天寿命
+                _reset = args.reset_interval > 0 and (day % args.reset_interval == 0)
+                prev = None if _reset else _latest_adapter(adapter_base, day)
+                if _reset:
+                    logln(f"  ↪ 神经新生重置(day {day}): 从 base 冷启动,外挂记忆保留")
                 r = train_27b(samples, adapter_name, prev_adapter=prev)
                 trained.append({"day": day, "samples": len(samples), "ok": r["ok"], "adapter": adapter_name})
                 logln(f"  [train] day {day}: {len(samples)} 样本 → {adapter_name} ok={r['ok']}")
