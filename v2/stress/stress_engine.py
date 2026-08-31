@@ -518,6 +518,53 @@ def train_27b(samples: list[str], adapter_name: str,
             "log_tail": (r.stdout + r.stderr)[-400:]}
 
 
+def _proactive_ctx(event_text: str, tom: dict, att: dict, day: int) -> str:
+    """★2026-09-01 耦合矩阵 v2: 主动消息生成上下文 = 认知层全输出汇聚。
+    事件 + ToM(advice+confidence) + 双图谱(主人情绪史+暗注意力) + L3(想起的事) + 心态。
+    供断点模型生成主动消息使用(她主动时带着全部认知, 不是"事件+规则句")。
+    """
+    parts = [f"事件:{event_text[:50]}"]
+    adv = tom.get("advice", "") if tom else ""
+    if adv and adv != "顺其自然":
+        parts.append(f"雷姆的读心:{adv[:36]}")
+    conf = tom.get("confidence") if tom else None
+    if conf is not None:
+        parts.append(f"置信:{conf:.2f}" + ("(雷姆不太确定)" if conf < 0.6 else ""))
+    atxt = att.get("attention_text", "") if att else ""
+    if atxt:
+        parts.append(f"雷姆注意到:{atxt[:36]}")
+    try:
+        import sqlite3 as _sq
+        _con = _sq.connect(os.path.join(config.SB, "memory", "L2_semantic", "l2.db"))
+        rows = _con.execute(
+            "SELECT mood_label, trigger FROM mood_graph WHERE edge_type='emotion' "
+            "AND entity != '' ORDER BY ts DESC LIMIT 3").fetchall()
+        if rows:
+            parts.append("主人最近:" + "；".join(f"{r[1][:10]}→{r[0]}" for r in rows)[:44])
+        h = _con.execute("SELECT source FROM mood_graph WHERE edge_type='hidden' "
+                         "AND source != '' ORDER BY RANDOM() LIMIT 1").fetchone()
+        if h:
+            parts.append(f"雷姆没说出口:{h[0][:30]}")
+        _con.close()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from engine.autobiography import _conn as _ac
+        l3 = _ac().execute("SELECT event FROM autobiography ORDER BY ts DESC LIMIT 1").fetchone()
+        if l3:
+            parts.append(f"雷姆想起:{l3[0][:34]}")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from engine.persona_injector import mood_prefix
+        _mp = mood_prefix(db=os.path.join(config.SB, "memory", "L2_semantic", "l2.db"))
+        if _mp and len(_mp) < 30:
+            parts.append(f"雷姆的心态:{_mp[:24]}")
+    except Exception:  # noqa: BLE001
+        pass
+    return " ".join(parts)
+
+
 def sample_persona(adapter_name: str, day: int) -> list[dict]:
     """用 27B + 当前 adapter 采样 4 题（人格一致性观测）。
 
@@ -555,11 +602,15 @@ def sample_persona(adapter_name: str, day: int) -> list[dict]:
                 if not (_r.get("rule_generated") and _r.get("situation")):
                     continue
                 try:
+                    # ★2026-09-01 耦合矩阵 v2: 生成输入=认知层全输出汇聚(事件+读心+置信+图谱情绪史+暗注意力+L3+心态)
+                    _ctx = _proactive_ctx(_r.get("situation", ""),
+                                          {"advice": _r.get("advice", ""), "emotion": _r.get("emotion", "")},
+                                          {}, day)
                     _p = tok.apply_chat_template(
                         [{"role": "system", "content": "你是雷姆,罗兹瓦尔宅邸的女仆。主人是昴。"
                                                        "你心里关心主人,想主动对他说一句话。"
                                                        "直接说雷姆会说的话,不要括号,不要解释,不要前缀。"},
-                         {"role": "user", "content": f"（场景）{_r['situation'][:60]}（雷姆的读心）{_r.get('advice','')[:40]}"}],
+                         {"role": "user", "content": _ctx}],
                         tokenize=False, add_generation_prompt=True, enable_thinking=False)
                     _gen = generate(model, tok, prompt=_p, max_tokens=40, sampler=sampler).strip().split("\n")[0][:50]
                     if _gen and len(_gen) > 3:
@@ -900,7 +951,8 @@ def main():
                     pass
                 # ★2026-09-01 驱动三源: 联结维护(ACC 社会痛觉)——久未主动 → 想主人 → 主动
                 _last_pro = max((x["day"] for x in proactive), default=1) if proactive else 1
-                r = decide(att, m["text"], tom=tom, day=day, last_proactive_day=_last_pro)
+                r = decide(att, m["text"], tom=tom, day=day, last_proactive_day=_last_pro,
+                          graph_db=os.path.join(config.SB, "memory", "L2_semantic", "l2.db"))
                 # ★ 2026-08-30 用户：注意力+潜意识进训练（她注意到什么/她的判断）
                 _atxt = att.get("attention_text", "")
                 if _atxt and _atxt not in _cog_seen:
@@ -936,6 +988,21 @@ def main():
                                           "advice": _adv[:40], "emotion": tom.get("emotion", "")})
         except Exception as e:  # noqa: BLE001
             logln(f"  [ToM] day {day} 异常: {e}")
+        # ★2026-09-01 DMN 自发通道(脑科学: Lieberman 默认模式网络=社会认知引擎):
+        #   空闲想起主人——久未主动(≥3天)且当天无主动 → 从 L3 自传体翻出主人的事 → 主动
+        #   = 人孤独时翻相册然后发消息(无事件驱动的主动, 治"输入断了就不主动")
+        if not any(x.get("day") == day for x in proactive):
+            try:
+                from engine.autobiography import _conn as _ac
+                _l3s = _ac().execute("SELECT event FROM autobiography ORDER BY ts DESC LIMIT 5").fetchall()
+                if _l3s:
+                    _mem = _l3s[day % len(_l3s)][0][:50]
+                    proactive.append({"day": day, "situation": f"（雷姆想起）{_mem}",
+                                      "message": f"（想起）{_mem[:20]}", "rule_generated": True,
+                                      "advice": "想念主人了", "emotion": "", "dmn_spontaneous": True})
+                    logln(f"  ↪ DMN 自发: 雷姆想起主人的事 → 主动(day {day})")
+            except Exception as _de:  # noqa: BLE001
+                pass
         # ③ 每 train_every 天训练（续跑：已训 adapter 跳过）
         if day % args.train_every == 0 and not _adapter_done(day):
             samples = extract_mood_samples(max(1, day - args.train_every + 1), day)
