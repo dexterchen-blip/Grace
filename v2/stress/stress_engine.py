@@ -885,7 +885,19 @@ def main():
                 pass
             for i, m in enumerate(msgs):
                 att = generate_attention(m["text"], mood=None, facts=[])
-                tom = infer_owner_state(m["text"], owner_mood)
+                # ★2026-09-01 修复断链: ToM 读双图谱(情绪史 mood_db + 暗注意力 hidden_ctx)
+                #   之前只传文本+当日心态——双图谱→ToM 通道从未接线(接口在, 调用没接)
+                #   = "她的 ToM 读她的双图谱"终于真正生效(情绪史+潜台词做读心依据)
+                try:
+                    from engine.self_activation import _tom_from_graph
+                    _gc = _tom_from_graph(m["text"],
+                                          os.path.join(config.SB, "memory", "L2_semantic", "l2.db"),
+                                          owner_mood=owner_mood)
+                    tom = infer_owner_state(m["text"], owner_mood,
+                                            mood_db=os.path.join(config.SB, "memory", "L2_semantic", "l2.db"),
+                                            hidden_ctx=_gc.get("hidden_ctx") or None)
+                except Exception:  # noqa: BLE001
+                    tom = infer_owner_state(m["text"], owner_mood)
                 # ★ 2026-08-30 用户: 人脑级反馈回路 v2(预测误差/再巩固/置信累积,零句式)
                 #   ①PE 调制: 误差大小驱动学习强度 ②再巩固: 修改原记忆(不动句子)
                 #   ③置信累积: 预测错误计数
