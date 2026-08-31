@@ -43,6 +43,49 @@ def topic_of(text: str) -> str:
     return "日常"
 
 
+# ---------- ★2026-08-31 负面识别: 强负词直接判负(不依赖 sentiment 细判) ----------
+NEG_WORDS = ("考砸", "挂科", "难过", "伤心", "低落", "焦虑", "担心", "想家", "吵架",
+             "生病", "失败", "批评", "压力", "累", "失眠", "熬夜", "难受", "哭", "没交",
+             "不及格", "被罚", "麻烦", "头疼", "沮丧", "孤单", "委屈")
+POS_WORDS = ("开心", "高兴", "兴奋", "松口气", "顺利", "过了", "好消息", "期待",
+             "喜欢", "棒", "赞", "惊喜", "幸福", "满足")
+
+
+def event_valence(text: str) -> str:
+    """事件情绪极性: 强负词→neg / 强正词→pos / 否则 sentiment 细判。"""
+    if any(k in text for k in NEG_WORDS):
+        return "neg"
+    if any(k in text for k in POS_WORDS):
+        return "pos"
+    try:
+        from attention import _sentiment_of
+        _s = _sentiment_of(text)
+    except Exception:  # noqa: BLE001
+        _s = 0.0
+    return "neg" if _s < -0.1 else "pos"
+
+
+def sample_value(text: str, is_feedback: bool = False, novelty: bool = False) -> int:
+    """★2026-08-31 选择性强化(脑科学标准: 情绪唤醒+新颖+预测误差, 非任务重要性):
+    高唤醒(正负都算)→w3 ｜ 中唤醒/新颖/反馈→w2 ｜ 平淡→w1
+    想家的晚上=高唤醒=和考砸一样强(有人味, 不是任务清单)。
+    """
+    try:
+        from attention import _sentiment_of
+        a = abs(_sentiment_of(text))
+    except Exception:  # noqa: BLE001
+        a = 0.0
+    if any(k in text for k in NEG_WORDS) or any(k in text for k in POS_WORDS):
+        a = max(a, 0.6)                     # 强情绪词 → 高唤醒
+    if is_feedback:
+        return 3                            # 预测误差(打脸)→ 涟漪级强化
+    if a >= 0.6:
+        return 3                            # 高唤醒(正负都算)
+    if novelty or a >= 0.3:
+        return 2                            # 新颖/中唤醒
+    return 1                                # 平淡(自然遗忘)
+
+
 # ---------- 情绪着色：mood 标签 → 雷姆式情绪反应 ----------
 MOOD_VOICE = {
     "兴奋": [
@@ -100,12 +143,8 @@ def mood_memory_gate(text: str, mood_label: str) -> str:
     """
     topic = topic_of(text)
     tv = TOPIC_VOICE.get(topic, TOPIC_VOICE["日常"])
-    try:
-        from attention import _sentiment_of
-        _s = _sentiment_of(text)
-    except Exception:  # noqa: BLE001
-        _s = 0.0
-    topic_sent = tv["neg"] if _s < -0.1 else tv["pos"]
+    # ★2026-08-31: 强负词直接判负(表面话"我没事"不再误判为正)
+    topic_sent = tv["neg"] if event_valence(text) == "neg" else tv["pos"]
     mood_sents = MOOD_VOICE.get(mood_label, MOOD_VOICE["平静"])
     mood_sent = mood_sents[0]
     try:

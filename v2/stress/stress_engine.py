@@ -378,7 +378,14 @@ def train_27b(samples: list[str], adapter_name: str,
         for t in anchor_texts[:n_anchor]:
             f.write(to_chat(t))
         for s in samples:
-            f.write(to_chat(s))
+            # ★2026-08-31 选择性强化: 高唤醒(正负都算)/反馈 → 权重3, 中唤醒 → 2, 平淡 → 1
+            try:
+                from mood_samples import sample_value
+                _w = sample_value(s)
+                for _i in range(_w):
+                    f.write(to_chat(s))
+            except Exception:  # noqa: BLE001
+                f.write(to_chat(s))
         # ★ 2026-08-30 用户：L3 矩阵(自传体叙事/自我评价)进训练 —— 自我认知塑造
         try:
             for s in extract_l3_samples(k=6):
