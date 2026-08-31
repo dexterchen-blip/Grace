@@ -63,7 +63,7 @@ def main() -> None:
     # 1. 加载 base + 转换 LoRA 层
     model, tokenizer, config = load(args.model, return_config=True)
     model.freeze()
-    lora_config = {"rank": args.lora_rank, "scale": args.lora_scale}
+    lora_config = {"rank": args.lora_rank, "scale": args.lora_scale, "dropout": 0.0}
     linear_to_lora_layers(model, args.num_layers, config=lora_config)
 
     # 2. 续训: 加载昨日 adapter
@@ -71,14 +71,29 @@ def main() -> None:
         print(f"Loading adapter from {args.resume_adapter_file}")
         model.load_weights(args.resume_adapter_file, strict=False)
 
+    def _flat(d, prefix: str = "") -> dict:
+        """递归展平嵌套参数树(dict+list) → {点路径: array}(与 compute_tom_fisher 一致)。"""
+        out = {}
+        if isinstance(d, dict):
+            for k, v in d.items():
+                name = f"{prefix}.{k}" if prefix else k
+                out.update(_flat(v, name))
+        elif isinstance(d, (list, tuple)):
+            for i, v in enumerate(d):
+                out.update(_flat(v, f"{prefix}.{i}"))
+        else:
+            out[prefix] = d
+        return out
+
     # 3. Fisher(ToM 突触重要性)
     fisher = {}
     if os.path.isfile(args.fisher_file):
         raw = json.load(open(args.fisher_file, encoding="utf-8"))
-        for name, p in model.trainable_parameters().items():
+        tp = _flat(model.trainable_parameters())
+        for name in tp:
             if name in raw:
                 fisher[name] = mx.array(raw[name])
-        print(f"EWC: 加载 {len(fisher)}/{len(model.trainable_parameters())} 个 ToM 突触重要性")
+        print(f"EWC: 加载 {len(fisher)}/{len(tp)} 个 ToM 突触重要性")
 
     # 4. 数据集 + 优化器
     train_dataset = load_dataset(args, tokenizer)
@@ -89,8 +104,8 @@ def main() -> None:
         ce, ntoks = default_loss(m, batch, lengths)
         ewc = mx.array(0.0)
         if fisher:
-            ewc = sum((fisher[n] * p * p).sum()
-                      for n, p in m.trainable_parameters().items() if n in fisher)
+            _tp = _flat(m.trainable_parameters())
+        ewc = sum((fisher[n] * p * p).sum() for n, p in _tp.items() if n in fisher)
         return ce + args.ewc_lambda * ewc, ntoks
 
     # 6. 训练

@@ -68,10 +68,25 @@ def main() -> None:
     print("加载 base + 转换 LoRA 层(初始随机,用于算梯度²)...")
     model, tokenizer, config = load(args.model, return_config=True)
     model.freeze()
-    lora_config = {"rank": args.rank, "scale": args.scale}
+    lora_config = {"rank": args.rank, "scale": args.scale, "dropout": 0.0}
     linear_to_lora_layers(model, args.num_layers, config=lora_config)
+    model.train()   # ★ 量化模型 eval 走 CustomKernel(vjp 不可用), train 模式走可微路径
 
-    trainable = model.trainable_parameters()
+    def _flat(d, prefix: str = "") -> dict:
+        """递归展平嵌套参数树(dict+list) → {点路径: array}(trainable_parameters 是嵌套 dict+list)。"""
+        out = {}
+        if isinstance(d, dict):
+            for k, v in d.items():
+                name = f"{prefix}.{k}" if prefix else k
+                out.update(_flat(v, name))
+        elif isinstance(d, (list, tuple)):
+            for i, v in enumerate(d):
+                out.update(_flat(v, f"{prefix}.{i}"))
+        else:
+            out[prefix] = d
+        return out
+
+    trainable = _flat(model.trainable_parameters())
     fisher = {name: mx.zeros_like(p) for name, p in trainable.items()}
     n = 0
 
@@ -79,16 +94,22 @@ def main() -> None:
         ids = tokenizer.encode(text)
         if len(ids) < 4:
             continue
-        x = mx.array(ids)[None, :-1]
-        y = mx.array(ids)[None, 1:]
+        # 与训练一致的形状: inputs=全部[:-1], targets=全部[1:], lengths=全量 mask(无截断)
+        batch = mx.array(ids)[None, :]
+        lengths = mx.array([[1, batch.shape[1]]])
+        inputs = batch[:, :-1]
+        targets = batch[:, 1:]
 
         def loss_fn(m: nn.Module) -> mx.array:
-            logits = m(x)
-            return nn.losses.cross_entropy(logits, y).mean()
+            logits = m(inputs)
+            steps = mx.arange(1, targets.shape[1] + 1)
+            mask = mx.logical_and(steps >= lengths[:, 0:1], steps <= lengths[:, 1:])
+            ce = nn.losses.cross_entropy(logits, targets) * mask
+            return ce.astype(mx.float32).sum() / mask.sum()
 
         loss_and_grad = nn.value_and_grad(model, loss_fn)
         _, grads = loss_and_grad(model)
-        for name, g in grads.items():
+        for name, g in _flat(grads).items():
             if name in fisher:
                 fisher[name] = fisher[name] + g * g
         n += 1
