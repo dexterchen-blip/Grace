@@ -184,6 +184,7 @@ def extract_mood_samples(day_from: int, day_to: int, max_samples: int = 15,
     from mood_samples import synthesize_day
     l0dir = os.path.join(config.SB, "memory", "L0_raw")
     samples = []
+    cand_by_day = {}          # ★2026-08-31: day -> [加工句] (跨天均匀采样的池子)
     if not os.path.isdir(l0dir):
         return samples
     official_used = 0
@@ -224,10 +225,34 @@ def extract_mood_samples(day_from: int, day_to: int, max_samples: int = 15,
                         samples.append(s[:160])
                         vault_used += 1
                         break
-                    if s not in samples and len(samples) < max_samples:
-                        samples.append(s)
-                        if is_official:
+                    if is_official:
+                        if s not in samples and len(samples) < max_samples:
+                            samples.append(s)
                             official_used += 1
+                    else:
+                        # ★2026-08-31 修复: stress 样本收集到按天池子,最后等间距均匀采样
+                        #   (原顺序截断: max_samples=15 前~5天就满,85天经历全没进训练!)
+                        cand_by_day.setdefault(day, []).append(s)
+    # ★2026-08-31 修复: 90天加工记忆均匀采样(跨天等间距,全部经历都进权重)
+    if cand_by_day:
+        cands = []
+        for d in sorted(cand_by_day):
+            for ss in cand_by_day[d]:
+                if ss not in cands:
+                    cands.append(ss)
+        need = max_samples - len(samples)
+        if need > 0:
+            if len(cands) <= need:
+                for ss in cands:
+                    if ss not in samples:
+                        samples.append(ss)
+            else:
+                step = max(1, len(cands) // need)
+                for i in range(0, len(cands), step):
+                    if len(samples) >= max_samples:
+                        break
+                    if cands[i] not in samples:
+                        samples.append(cands[i])
     return samples
 
 
@@ -292,9 +317,11 @@ def extract_graph_samples(k: int = 8, db: str | None = None) -> list[str]:
         import sqlite3
         con = sqlite3.connect(db)
         # ① 情绪边(★机制①: 高 uncertainty 记忆权重×2 = 再巩固的"不确定"更持久)
+        # ★2026-08-31 修复: ORDER BY ts DESC→ORDER BY RANDOM()(原只取最后几天,90天低落/兴奋边全被截断;
+        #   随机采样=记忆提取随机性,低落/兴奋/平静都进训练)
         rows = con.execute(
             "SELECT entity, mood_label, trigger, COALESCE(uncertainty, 0.2) FROM mood_graph "
-            "WHERE edge_type='emotion' AND entity != '' ORDER BY ts DESC LIMIT ?", (k * 4,)).fetchall()
+            "WHERE edge_type='emotion' AND entity != '' ORDER BY RANDOM() LIMIT ?", (k * 12,)).fetchall()
         for entity, mood, trigger, unc in rows:
             _key = f"{entity}|{mood}|{trigger[:20]}"
             if _key in seen:
@@ -309,12 +336,12 @@ def extract_graph_samples(k: int = 8, db: str | None = None) -> list[str]:
         # ② 暗注意力边(潜台词)
         hrows = con.execute(
             "SELECT source FROM mood_graph WHERE edge_type='hidden' "
-            "AND source != '' ORDER BY ts DESC LIMIT ?", (k * 4,)).fetchall()
+            "AND source != '' ORDER BY RANDOM() LIMIT ?", (k * 12,)).fetchall()
         for (src,) in hrows:
             if src in seen:
                 continue
             seen.add(src)
-            out.append(f"（雷姆的心里话）{src[:60]}")
+            out.append(f"{src[:60]}")   # 2026-08-31: 去（雷姆的心里话）帽(零前缀原则)
             if len(out) >= k * 2:
                 break
         con.close()
