@@ -32,6 +32,10 @@ def main() -> None:
                     help="收缩强度(高 Fisher 收缩比例,0-1;默认 0.7)")
     ap.add_argument("--delta", type=float, default=0.0,
                     help="★SHY 睡眠全局下调率(突触稳态假说 Tononi&Cirelli): 弱突触按 δ 衰减,强突触豁免;0=关闭")
+    ap.add_argument("--noise-floor", type=float, default=1e-5,
+                    help="★分层保护(2026-09-01): |θ|<noise_floor=纯噪声/污染,按 δ 全衰减")
+    ap.add_argument("--keep-floor", type=float, default=1e-4,
+                    help="★分层保护: noise_floor≤|θ|<keep_floor=刚写入的弱记忆,半衰减 δ/2; |θ|≥keep_floor=已巩固记忆,豁免")
     args = ap.parse_args()
 
     if not os.path.isfile(args.adapter) or not os.path.isfile(args.fisher):
@@ -56,14 +60,16 @@ def main() -> None:
             print(f"[consolidate] ⚠ shape 不匹配 {k}: F={F.shape} w={w.shape},跳过")
             continue
         fmax = float(F.max()) if F.size else 0.0
-        # ★SHY 突触稳态下调(2026-09-01, 治 30 天寿命): 全局按比例衰减,但强突触豁免
-        #   scale_sleep = 1 - δ×(1 - |θ|/θ_max) —— 弱参数衰减 δ,强参数(≈θ_max)豁免
-        #   净效应: 污染弱信号每天被洗掉,核心人格/记忆保留,adapter 不饱和
+        # ★SHY 突触稳态下调(2026-09-01, 治 30 天寿命) + 分层保护(用户: 清理程度要设边界防误伤记忆):
+        #   |θ|<noise_floor  = 纯噪声/污染 → 按 δ 全衰减(洗掉)
+        #   noise_floor≤|θ|<keep_floor = 刚写入的弱记忆 → 半衰减 δ/2(给巩固期,不立刻洗掉)
+        #   |θ|≥keep_floor   = 已巩固记忆(人格/重要经历) → 豁免
+        #   (依据: LoRA 参数 54% <1e-4 但稀疏≠噪声;书库 L0 永久可兜底,但权重层不该过度清洗)
         if args.delta > 0 and w.size:
-            wmax = float(np.abs(w).max())
-            if wmax > 0:
-                scale_sleep = 1.0 - args.delta * (1.0 - np.abs(w) / wmax)
-                w = w * scale_sleep
+            a = np.abs(w)
+            decay = np.where(a < args.noise_floor, args.delta,
+                             np.where(a < args.keep_floor, args.delta * 0.5, 0.0))
+            w = w * (1.0 - decay)
         # EWC: ToM 方向拉回(护能力,防覆盖)
         if fmax > 0:
             scale_ewc = 1.0 - args.alpha * (F / fmax)
@@ -73,8 +79,9 @@ def main() -> None:
 
     # 4. 写回
     save_file(weights, args.adapter)
-    _sleep = f"+SHY 全局下调 δ={args.delta}" if args.delta > 0 else ""
-    print(f"[consolidate] ✅ 突触巩固完成: {n_scaled}/{len(weights)} 参数(α={args.alpha}{_sleep})")
+    _sleep = f"+SHY 睡眠 δ={args.delta}(noise<{args.noise_floor:.0e}, keep≥{args.keep_floor:.0e})" if args.delta > 0 else ""
+    _fn = float(np.sqrt(sum(float((v.astype(np.float32) ** 2).sum()) for v in weights.values())))
+    print(f"[consolidate] ✅ 突触巩固完成: {n_scaled}/{len(weights)} 参数(α={args.alpha}{_sleep}) F-norm={_fn:.4e}")
 
 
 if __name__ == "__main__":

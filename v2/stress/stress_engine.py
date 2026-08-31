@@ -496,9 +496,24 @@ def train_27b(samples: list[str], adapter_name: str,
                  "--fisher", os.path.join(os.path.dirname(os.path.abspath(__file__)), "tom-fisher.json"),
                  "--alpha", os.environ.get("GRACE_EWC_ALPHA", "0.7"),
                  "--delta", os.environ.get("GRACE_SLEEP_DELTA", "0.03")]
-        rc = subprocess.run(_cons, capture_output=True, text=True, timeout=300)
+        # ★净学习量监控(2026-09-01, 用户: 清理程度要设边界): 训练后 vs 睡眠巩固后的 F-norm
+        #   净学习 = 训练写入 − 睡眠清洗;连续为负 → δ 过大需调小
+        try:
+            def _fnorm(pth: str) -> float:
+                from safetensors import safe_open as _so
+                import numpy as _np
+                with _so(pth, framework="np") as _f:
+                    return float(_np.sqrt(sum(float((_f.get_tensor(k).astype(_np.float32) ** 2).sum()) for k in _f.keys())))
+            _before = _fnorm(os.path.join(adapter, "adapters.safetensors"))
+            rc = subprocess.run(_cons, capture_output=True, text=True, timeout=300)
+            _after = _fnorm(os.path.join(adapter, "adapters.safetensors"))
+            _net = _after - _before
+            _flag = "⚠δ过大?" if _net < -1e-6 else "✓"
+            print(f"  ↪ EWC 突触巩固: {'✅' if rc.returncode == 0 else '❌'} F-norm {_before:.2e}→{_after:.2e} 净学习 {_net:+.2e} {_flag}", flush=True)
+        except Exception as _ce:  # noqa: BLE001
+            rc = subprocess.run(_cons, capture_output=True, text=True, timeout=300)
+            print(f"  ↪ EWC 突触巩固: {'✅' if rc.returncode == 0 else '❌'} {rc.stdout.strip()[-60:]}", flush=True)
         ok = ok and rc.returncode == 0
-        print(f"  ↪ EWC 突触回缩: {'✅' if rc.returncode == 0 else '❌'} {rc.stdout.strip()[-60:]}", flush=True)
     return {"ok": ok, "samples": len(samples), "adapter": adapter,
             "log_tail": (r.stdout + r.stderr)[-400:]}
 
