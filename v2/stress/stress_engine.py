@@ -375,17 +375,8 @@ def train_27b(samples: list[str], adapter_name: str,
         ]}, ensure_ascii=False) + "\n"
 
     with open(os.path.join(ds_dir, "train.jsonl"), "w", encoding="utf-8") as f:
-        for t in anchor_texts[:n_anchor]:
-            f.write(to_chat(t))
-        for s in samples:
-            # ★2026-08-31 选择性强化: 高唤醒(正负都算)/反馈 → 权重3, 中唤醒 → 2, 平淡 → 1
-            try:
-                from mood_samples import sample_value
-                _w = sample_value(s)
-                for _i in range(_w):
-                    f.write(to_chat(s))
-            except Exception:  # noqa: BLE001
-                f.write(to_chat(s))
+        # ═══ 双相训练(2026-08-31,脑科学 SWS/REM): 先 SWS 段(细节固化), 后 REM 段(泛化整合) ═══
+        # ★ SWS 段(细节轮): 具体经历(L3 自传体 + 双图谱情绪边) —— 模式分离, 记住那天的事
         # ★ 2026-08-30 用户：L3 矩阵(自传体叙事/自我评价)进训练 —— 自我认知塑造
         try:
             for s in extract_l3_samples(k=6):
@@ -398,6 +389,18 @@ def train_27b(samples: list[str], adapter_name: str,
                 f.write(to_chat(s))
         except Exception:  # noqa: BLE001
             pass
+        # ═══ REM 段(泛化轮): 图式/规律(锚点 + 加工层一般句 + 反馈 + cognition + proactive) ═══
+        for t in anchor_texts[:n_anchor]:
+            f.write(to_chat(t))
+        for s in samples:
+            # ★2026-08-31 选择性强化: 高唤醒(正负都算)/反馈 → 权重3, 中唤醒 → 2, 平淡 → 1
+            try:
+                from mood_samples import sample_value
+                _w = sample_value(s)
+                for _i in range(_w):
+                    f.write(to_chat(s))
+            except Exception:  # noqa: BLE001
+                f.write(to_chat(s))
         # ★ 2026-08-30 用户：人脑级反馈(PE调制)进训练——误差大→权重高(多巴胺RPE)
         #   数据对(情境→现实),无句式;权重=PE强度(写 w 次)
         _fl = os.path.join(STRESS_ROOT, "feedback-live.jsonl")
