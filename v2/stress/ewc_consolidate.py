@@ -42,9 +42,11 @@ def main() -> None:
         print(f"[consolidate] 缺文件: adapter={os.path.isfile(args.adapter)} fisher={os.path.isfile(args.fisher)}")
         return
 
-    # 1. 读 adapter 权重
+    # 1. 读 adapter 权重(★2026-09-01 修复: 记录原 dtype——numpy 算术会把 fp16/fp32 提升为
+    #    float64, mlx_lm.load 报 unsupported dtype F64 导致断点采样/续训失败, 保存前必须还原)
     with safe_open(args.adapter, framework="np") as f:
         weights = {k: f.get_tensor(k) for k in f.keys()}
+        dtypes = {k: f.get_tensor(k).dtype for k in f.keys()}
 
     # 2. 读 Fisher(嵌套 list → np 数组)
     fisher_raw = json.load(open(args.fisher, encoding="utf-8"))
@@ -78,6 +80,10 @@ def main() -> None:
         weights[k] = w
 
     # 4. 写回
+    # 保存前 astype 回原 dtype(float16/float32)——防 float64 污染
+    for k in weights:
+        if weights[k].dtype != dtypes[k]:
+            weights[k] = weights[k].astype(dtypes[k])
     save_file(weights, args.adapter)
     _sleep = f"+SHY 睡眠 δ={args.delta}(noise<{args.noise_floor:.0e}, keep≥{args.keep_floor:.0e})" if args.delta > 0 else ""
     _fn = float(np.sqrt(sum(float((v.astype(np.float32) ** 2).sum()) for v in weights.values())))
