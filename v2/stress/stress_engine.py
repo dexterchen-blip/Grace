@@ -339,8 +339,11 @@ def extract_graph_samples(k: int = 8, db: str | None = None) -> list[str]:
             #   (与输出层 monitor 禁叙述体冲突)。改输出图谱边 trigger 原文(真实痕迹, 同 L3 纯事件),
             #   情绪数据仍在图谱外挂轨(ToM/dual_query 运行时读), 权重轨只学真实痕迹——符合三轨铁律。
             _t = (trigger or "").strip()[:60]
+            # ★2026-09-03 修复: 原 len<6 → f"主人{entity}的事" 是代码槽填充模板句,
+            #   因 entity_of 把 89% 事件归「日常」→ 拼出「主人日常的事」×70 进权重轨
+            #   (净轮实测 33/33 数据集全中)。按零规则句铁律: 过短的 trigger 直接跳过, 不造句。
             if len(_t) < 6:
-                _t = f"主人{entity}的事"[:60]
+                continue
             out.append(_t)
             if unc >= 0.7:
                 out.append(_t)          # ★ 高不确定记忆权重×2(再巩固)
@@ -818,6 +821,21 @@ def sample_persona(adapter_name: str, day: int) -> list[dict]:
                         _r["suppressed"] = True
                         _changed += 1
                         continue
+                    # ★2026-09-03 评估双层提取(用户: 同时提取暗注意力+输出): 先取"她心里想什么"
+                    #   (think = 暗注意力: 自由内心, 不经 monitor——内心可叙述), 再取"她说什么"
+                    #   (message = 输出链口语编码 + monitor)。评估分开 judge: 思考质量 vs 表达质量,
+                    #   "知道的 vs 说出的" 差距 = 边界/克制能力。think 仅观测, 不进训练。
+                    _think_p = tok.apply_chat_template(
+                        [{"role": "system",
+                          "content": "你是雷姆。你心里在想主人的事——写出你此刻的观察、你的判断、你的顾虑、你的联想。"
+                                     "只写心里话, 不用考虑说出口(这段永远不说给主人听)。不要任何开头语。"},
+                         {"role": "user", "content": f"主人刚才: {_r.get('situation', '')[:60]}"}],
+                        tokenize=False, add_generation_prompt=True, enable_thinking=False)
+                    try:
+                        _r["think"] = generate(model, tok, prompt=_think_p, max_tokens=90,
+                                               sampler=sampler).strip().split("\n")[0][:120]
+                    except Exception:  # noqa: BLE001
+                        _r["think"] = ""
                     _msgs = _ebm(_internal)
                     _p = tok.apply_chat_template(_msgs,
                                                  tokenize=False, add_generation_prompt=True, enable_thinking=False)
@@ -1046,6 +1064,19 @@ def main():
     resume = _resume_from()
     if resume > 0:
         logln(f"  ↪ 检测到已摄入至 day {resume}，从 day {resume+1} 续跑（已训 adapter/断点自动跳过）")
+    # ★2026-09-03 存储治理: 轮次元数据登记(storage.py)——每次启动=一个新 round 条目(可追溯),
+    #   resume 时补标记; 训练成功逐天登记权重; 完成写 summary。
+    round_id = time.strftime("%Y%m%d-%H%M%S", time.localtime())
+    try:
+        from engine.storage import create_round, resume_round
+        round_id = create_round(days=args.days, train_every=args.train_every,
+                                sample_every=args.sample_every, inputs_dir=args.inputs_dir,
+                                ingest_official=args.ingest_official, reset_interval=args.reset_interval)
+        logln(f"  [storage] round {round_id} 登记(轮次元数据 → round-meta.json)")
+        if resume > 0:
+            resume_round(round_id, note=f"resume from day {resume+1}")
+    except Exception as _se:  # noqa: BLE001
+        logln(f"  [storage] round 登记失败(降级用本地 ts): {_se}")
 
     def _adapter_done(day: int) -> bool:
         return os.path.isdir(os.path.join(config.ADAPTERS, f"{adapter_base}_d{day}"))
@@ -1104,6 +1135,24 @@ def main():
             _c3.commit(); _c3.close()
         except Exception as e:  # noqa: BLE001
             logln(f"  [dual-graph] day {day} 异常: {e}")
+        # ③b ★2026-09-03 暗注意力归档（用户：思考=暗注意力）：当天 cog（27B 认知重构的
+        #   真实内心独白）→ 写 hidden 边（全暗，只注入决策不输出）。废除情绪规则模板推导
+        #   （_HIDDEN_RULES 4 句假潜台词 → 分布倒置/焦虑偏置源头，见 mood_graph 注释）。
+        try:
+            from engine.mood_graph import add_hidden_text
+            _cogs = (rec.get("cog") or []) if isinstance(rec, dict) else []
+            _written = 0
+            for _cog_txt in _cogs:
+                _ct = (_cog_txt or "").strip()
+                if len(_ct) < 8:
+                    continue
+                add_hidden_text("日常", _ct[:140], ts=day_ts(day, 22),
+                                db=os.path.join(config.SB, "memory", "L2_semantic", "l2.db"))
+                _written += 1
+            if _written:
+                logln(f"  ↪ 暗注意力归档: {_written} 条真实思考 → hidden 边(cog)")
+        except Exception as e:  # noqa: BLE001
+            logln(f"  [hidden-archive] day {day} 异常: {e}")
         # ④ ★ L3 自传体矩阵摄入（2026-08-29 集成）
         try:
             from engine.autobiography import add_event
@@ -1187,7 +1236,9 @@ def main():
                     from attention import _sentiment_of
                     from mood_graph import mood_label_of
                     _s = _sentiment_of(m["text"])
-                    _real = mood_label_of(_s, abs(_s) + 0.3) if abs(_s) >= 0.3 else "平静"
+                    # ★2026-09-03 修复: 去 +0.3 强度注水（与 theory_of_mind 推断链同步，
+                    #   real/believed 用同一公式，改两边保持口径一致）
+                    _real = mood_label_of(_s, abs(_s)) if abs(_s) >= 0.3 else "平静"
                     _believed = tom.get("emotion", "平静")
                     _neg = ("低落", "焦虑", "烦躁", "难过", "生气")
                     _pos = ("开心", "兴奋", "轻微兴奋", "快乐", "愉悦")
@@ -1410,6 +1461,14 @@ def main():
                 logln(f"  [train] day {day}: {r.get('samples', 0)} 训练样本 → {adapter_name} ok={r['ok']}")
                 if r["ok"]:
                     try:
+                        # ★2026-09-03 权重登记(registry)——可追溯: 轮/天/样本/参数
+                        from engine.storage import register_weight
+                        register_weight(round_id, day, adapter_name,
+                                        samples=int(r.get("samples", 0)), ok=True,
+                                        extra={"ewc_mode": "A" if os.environ.get("GRACE_EWC_MODE") == "A" else "B"})
+                    except Exception as _we:  # noqa: BLE001
+                        logln(f"  [storage] 权重登记失败: {_we}")
+                    try:
                         from adapter_manage import promote
                         promote(adapter_name, decided_by="stress-auto")
                     except Exception as e:  # noqa: BLE001
@@ -1453,6 +1512,15 @@ def main():
         logln(f"  ↪ 她主动找主人 {len(proactive)} 次 → proactive-live.jsonl(训练前落盘+断点生成已维护, 完成时不覆盖)")
     with open(os.path.join(STRESS_ROOT, "final.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
+    # ★2026-09-03 完成汇总 → round-meta
+    try:
+        from engine.storage import finalize_round
+        finalize_round(round_id, {"days": summary["days"], "elapsed_s": summary["elapsed_s"],
+                                  "trained_n": len(summary["trained"]),
+                                  "breakpoints": len(summary["samples"]),
+                                  "ok_trained": sum(1 for t in summary["trained"] if t.get("ok"))})
+    except Exception as _fe:  # noqa: BLE001
+        logln(f"  [storage] finalize 失败: {_fe}")
     logln(f"=== 回放模拟完成 {datetime.now().strftime('%H:%M:%S')} ｜ 耗时 {summary['elapsed_s']}s ｜ 训练 {len(trained)} 次 ｜ 断点 {len(samples_taken)} 个 ===")
     log.close()
     print(json.dumps(summary, ensure_ascii=False, indent=2))

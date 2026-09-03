@@ -22,6 +22,7 @@ import time
 from datetime import datetime
 
 SB = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # 压力副本根
+sys.path.insert(0, os.path.join(SB, "v2", "engine"))
 STRESS = os.path.join(SB, "experiments", "run", "stress")
 ADAPTERS = os.path.join(SB, "experiments", "lora", "adapters")
 DATASETS = os.path.join(SB, "experiments", "lora", "datasets")
@@ -93,13 +94,37 @@ def main():
         shutil.move(os.path.join(DATASETS, d), os.path.join(arch, "datasets", os.path.basename(d)))
         print(f"  ✓ dataset: {os.path.basename(d)}")
     # logs
+    # ★2026-09-03 修复(--keep-log 语义反了): 原 `if not keep_log:` 一档包住全部 6 个文件 →
+    #   带 --keep-log 的轮次反而【保留】4 个 append 累积的 live 文件(净轮实锤污染:
+    #   prediction-errors 778 条里 day1 有 75 条(正常 20-30)、8 个 day 超标;
+    #   训练集吃旧轮 proactive「雷姆会准备好的」×33; proactive 159 条含 9 个旧轮重复组)。
+    #   正确语义: --keep-log = 只保留 stress.log/analysis.md 供排查;
+    #   4 个 append 累积文件【无论如何都归档】(否则新轮数据不可单独归因)。
+    for f in ("proactive-live.jsonl", "feedback-live.jsonl",
+              "cognition-live.jsonl", "prediction-errors.jsonl"):
+        mv(os.path.join(STRESS, f), os.path.join(arch, "logs"), "log(强制归档)")
     if not keep_log:
-        # ★2026-09-02 K轮复盘修复: 补归档 feedback/cognition/prediction-errors——
-        #   这三个 live 文件是 append 累积的, 不归档 → 跨轮污染(新轮训练混入旧轮反馈/认知/判断,
-        #   prediction-errors 两轮 day 编号相同还混淆日常 ToMi 统计与 ToM 置信)
-        for f in ("stress.log", "analysis.md", "proactive-live.jsonl",
-                  "feedback-live.jsonl", "cognition-live.jsonl", "prediction-errors.jsonl"):
+        for f in ("stress.log", "analysis.md"):
             mv(os.path.join(STRESS, f), os.path.join(arch, "logs"), "log")
+    # ★2026-09-03 存储治理: 轮次元数据归档 + 权重 registry 保留(live) + 中间 adapter 清理建议
+    import os as _os
+    _rm = _os.path.join(STRESS, "round-meta.json")
+    if _os.path.isfile(_rm):
+        mv(_rm, _os.path.join(arch, "logs"), "round-meta(轮次元数据归档)")
+    try:
+        sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "engine"))
+        import storage as _st
+        _stale = _st.stale_files()
+        for s in _stale:
+            print(f"  ⚠ 僵尸存储: {s['file']} ({s['issue']}) → {s['action']}")
+        _rep = _st.prune_middle_adapters()
+        _tot = sum(len(v.get("to_delete", [])) for v in _rep.values())
+        if _tot:
+            print(f"  [storage] 中间 adapter 建议清理 {_tot} 个(保留轮末/断点权重, registry 在 lora/weights-registry.json)")
+        else:
+            print("  [storage] 权重 registry 现无中间 adapter 待清")
+    except Exception as _se:  # noqa: BLE001
+        print(f"  [storage] 清理建议失败(不影响重置): {_se}")
     print(f"\n✅ 重置完成 → archive/{stamp}/ ｜ 输入 inputs/ 保留")
 
 
