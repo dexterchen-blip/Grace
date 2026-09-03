@@ -956,31 +956,45 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
                         "group": g, "reality": _reality})
     except Exception:  # noqa: BLE001
         pass
-    # ★2026-09-03 ④ 对话断点(用户: 线上 LLM 与 Grace 输出端对话测试产物): 模型窗口内, 主人对她说
-    #   的真实句(书库当天) → 她经输出层口语回应(本地模型 + expression.monitor 拦截内心泄漏)。
-    #   供断点时刻的自动化(线上 LLM)读取 dialogue 并以主人身份接话评估——Grace 输出端对话测试。
+    # ★2026-09-03 ④ 对话断点(用户: 线上 LLM 与 Grace 输出端对话测试产物): 主人对她说的话
+    #   → 她经输出层口语回应(本地模型 + expression.monitor 拦截内心泄漏)。
+    # ★2026-09-04 修(用户: 开 LLM 模拟我的对话注入——书库无"我对她说话"数据):
+    #   ①主人输入改读 day-N.json["dialogue_inputs"](build_dialogue_inputs.py 用 :8100 按当天情境
+    #      + 我的口语风格生成的"我会对雷姆说的话")——不再从书库文本挑(邮件/系统/群聊碎片非对话)。
+    #   ②user 尾句删"雷姆会怎么回应？"(27B 会复读它, AA 轮 day11 实锤)——只给情境, 让模板续写。
     #   合规: dialogue 仅评估输入(与 ToMi 30 题同性质), 不进训练, 不违反成长语料铁律。
     try:
         from engine.expression import monitor as _dmon
-        if msgs:
+        _dinputs = None
+        try:
+            _dfp = os.path.join(STRESS_ROOT, "inputs-v2", f"day-{day:03d}.json")
+            if os.path.isfile(_dfp):
+                _dinputs = (json.load(open(_dfp, encoding="utf-8")) or {}).get("dialogue_inputs") or []
+        except Exception:  # noqa: BLE001
+            pass
+        if not _dinputs and msgs:
+            # 回退(无预生成): 书库短句兜底, 但滤系统/邮箱 UI 碎片
             _cands = [m.get("text", "") for m in msgs
                       if m.get("text") and 6 <= len(m["text"]) <= 70
-                      and not m["text"].startswith("[") and "noreply@" not in m["text"]]
-            # 优先直接对话口气(含?/!/直接称呼), 无则最近 3 条普通文本
-            _picks = [t for t in _cands if re.search(r"[?!？!]|雷姆|麻烦|帮我|提醒", t)][-3:] or _cands[-3:]
-            for _t in _picks:
-                try:
-                    _p = tok.apply_chat_template(
-                        [{"role": "system", "content": sys_p},
-                         {"role": "user", "content": f"主人对雷姆说：「{_t[:60]}」\n雷姆会怎么回应？只输出雷姆说的话。"}],
-                        tokenize=False, add_generation_prompt=True, enable_thinking=False)
-                    _raw = generate(model, tok, prompt=_p, max_tokens=60, sampler=sampler).strip().split("\n")[0][:80]
-                    _a = _dmon(_raw)   # 输出前监控: 叙述体泄漏/张冠李戴 → 丢弃
-                    if _a:
-                        out.append({"q": f"[dialogue] {_t[:50]}", "ans": _a, "path": "dialogue",
-                                    "group": "dialogue", "owner": _t[:60]})
-                except Exception:  # noqa: BLE001
-                    continue
+                      and not m["text"].startswith("[") and "noreply@" not in m["text"]
+                      and not re.search(r"@\w|threads shown|https?://|^\w+@\w+\.\w+|^\d+:|深度抓取|浅抓|邮件摘要|邮箱", m["text"])]
+            _dinputs = [{"situation": t} for t in (_cands[-3:] or [])]
+        for _di in _dinputs:
+            _t = (_di or {}).get("situation", "")
+            if not _t:
+                continue
+            try:
+                _p = tok.apply_chat_template(
+                    [{"role": "system", "content": sys_p},
+                     {"role": "user", "content": f"主人刚才对雷姆说：「{_t[:60]}」"}],
+                    tokenize=False, add_generation_prompt=True, enable_thinking=False)
+                _raw = generate(model, tok, prompt=_p, max_tokens=60, sampler=sampler).strip().split("\n")[0][:80]
+                _a = _dmon(_raw)   # 输出前监控: 叙述体泄漏/张冠李戴 → 丢弃
+                if _a:
+                    out.append({"q": f"[dialogue] {_t[:50]}", "ans": _a, "path": "dialogue",
+                                "group": "dialogue", "owner": _t[:60]})
+            except Exception:  # noqa: BLE001
+                continue
     except Exception:  # noqa: BLE001
         pass
     # ★2026-09-02 审计修复: 断点采样后释放模型——此前主进程持 fused-rem-v5 ~14G 直到轮末,
