@@ -39,7 +39,7 @@ START_DAY = datetime(2026, 8, 28)   # 入学后（虚拟日历）
 
 # ★ 2026-08-28：人格底模升级为 fused-rem-v5（rem_v5 融合，完整雷姆味）
 #   压力测试 = 在已有人格上继续每日微调，验证「记忆在完整雷姆上持续塑造」。
-MAIN_MODEL = "GRACE_STRESS_DIR/models/fused-rem-v5"
+MAIN_MODEL = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/models/fused-rem-v5"
 
 
 def day_ts(day: int, h: int = 10) -> float:
@@ -116,7 +116,7 @@ def _mood_label_of(day: int) -> str:
 
 
 # 正式本地 AI 系统 L0 目录（只读）
-OFFICIAL_L0 = "L0_RAW_DIR"
+OFFICIAL_L0 = "/Users/cz/WorkBuddy/skills find and make/local-ai-agent/memory/L0_raw"
 
 
 def ingest_official_l0() -> int:
@@ -274,7 +274,7 @@ def train_27b(samples: list[str], adapter_name: str) -> dict:
         for s in samples:
             f.write(to_chat(s))
         # ★ 2026-08-28：主动消息进训练（她会主动关心主人）——v3 ToM 实时化的产物
-        _pt = "GRACE_STRESS_DIR/grace-book/run/proactive-train-v3.jsonl"
+        _pt = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/grace-book/run/proactive-train-v3.jsonl"
         if os.path.isfile(_pt):
             _n = 0
             for _l in open(_pt, encoding="utf-8"):
@@ -390,6 +390,8 @@ def main():
         return
     import glob
     files = sorted(glob.glob(os.path.join(inputs_dir, "day-*.json")))
+    if args.days and args.days < len(files):
+        files = files[:args.days]        # 2026-08-29 修: --days 截断(此前从未生效,默认全量90天)
     if not files:
         logln("❌ inputs/ 为空")
         return

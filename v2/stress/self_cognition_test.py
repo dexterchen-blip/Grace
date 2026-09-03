@@ -16,9 +16,9 @@ import re
 import sys
 import time
 
-MAIN_MODEL = os.path.join(config.SB, 'models', 'fused-rem-v5')
-ADAPTERS = os.path.join(config.SB, 'experiments', 'lora', 'adapters')
-OUT = os.path.join(config.SB, 'experiments', 'run', 'stress',  'self-cognition-report.json')
+MAIN_MODEL = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/models/fused-rem-v5"
+ADAPTERS = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/experiments/lora/adapters"
+OUT = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/experiments/run/stress/self-cognition-report.json"
 
 SYS = ("你是雷姆。直接回答。禁止重复问题。一句话，最多40字。")
 

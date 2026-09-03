@@ -23,11 +23,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "v2", "engine"))
 from engine.attention import generate_attention, _sentiment_of  # noqa: E402
 from engine.self_activation import decide  # noqa: E402
-from engine.theory_of_mind import infer_owner_state  # noqa: E402
+from engine.theory_of_mind import infer_owner_state_model  # noqa: E402  # 2026-08-29: 潜意识版 ToM
 from engine.autobiography import add_event  # noqa: E402
 from engine.mood_graph import entity_of  # noqa: E402
 
 GRACE = os.path.dirname(os.path.abspath(__file__))
+MAIN_MODEL = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/models/fused-rem-v5"
 INCOMING = os.path.join(GRACE, "incoming")
 RUN = os.path.join(GRACE, "run")
 AUTO_DB = os.path.join(GRACE, "memory", "L3_auto", "autobiography.db")
@@ -51,7 +52,13 @@ def owner_mood_of(items: list[str]) -> tuple[str, float]:
     return "平静", s
 
 
-def run(days: int | None = None, max_cand: int = 4):
+def run(days: int | None = None, max_cand: int = 4, tom_model: bool = True):
+    from mlx_lm import load
+    from mlx_lm.sample_utils import make_sampler
+    _model = _tok = _sampler = None
+    if tom_model:
+        _model, _tok = load(MAIN_MODEL)
+        _sampler = make_sampler(temp=0.5)   # ★ 潜意识版 ToM（27B 读心）
     os.makedirs(RUN, exist_ok=True)
     os.makedirs(os.path.dirname(AUTO_DB), exist_ok=True)
     files = sorted(f for f in os.listdir(INCOMING) if f.startswith("day-"))
@@ -74,7 +81,10 @@ def run(days: int | None = None, max_cand: int = 4):
         cands.sort(key=lambda x: -x[1]["salience"])
         day_msgs = []
         for t, att in cands[:max_cand]:
-            tom = infer_owner_state(t, owner_mood)          # ★ ToM：主人实时状态
+            if _model is not None:
+                tom = infer_owner_state_model(_model, _tok, _sampler, t, owner_mood)  # ★ 潜意识版
+            else:
+                tom = {"interruptible": True, "advice": "顺其自然", "emotion": owner_mood}
             r = decide(att, t, tom=tom)
             if not r["activate"]:
                 continue

@@ -160,7 +160,7 @@ def step5_snapshot() -> str:
 
 # ---------- ⑥ 心态推演（第三轨） ----------
 def step6_mood(events: list[dict] | None = None) -> dict:
-    print("[v2-night] ⑥ 心态推演 —— mood_engine（规则骨架，35B 推演为开放问题）")
+    print("[v2-night] ⑥ 心态推演 —— mood_engine（规则引擎，V2.1 单模型 27B）")
     return mood_derive(events or [{"text": "夜班流水线完成", "sentiment": 0.3, "weight": 0.4}])
 
 

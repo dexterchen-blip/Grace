@@ -108,13 +108,21 @@ def infer_owner_state(event_text: str, mood_label: str = "平静",
         advice += "（深夜了，不打扰）"
     # ★ 机制③置信累积消费端(2026-08-31): 预测错误率 → ToM 置信下降 → "不确定"从置信架构涌现
     #   prediction-errors.jsonl 每轮记录她的判断vs现实偏差;错误多 → 她对主人情绪的预测置信低
+    #   ★2026-09-01 修复(代码复盘): 原来统计的是文件行数(9/1 起全量记对+错, ~28条即触底0.3)
+    #     → 改为统计 correct==False 的错误行数
     confidence = 0.85
     try:
         import json as _json, os as _os
         import config
         _pe = _os.path.join(config.EXPERIMENTS, "run", "stress", "prediction-errors.jsonl")
         if _os.path.isfile(_pe):
-            _errs = sum(1 for _ in open(_pe, encoding="utf-8"))
+            _errs = 0
+            for _l in open(_pe, encoding="utf-8"):
+                try:
+                    if _json.loads(_l).get("correct") is False:
+                        _errs += 1
+                except _json.JSONDecodeError:
+                    continue
             confidence = max(0.3, 0.85 - 0.02 * _errs)   # 每 10 次错误 -0.2,地板 0.3
     except Exception:  # noqa: BLE001
         pass

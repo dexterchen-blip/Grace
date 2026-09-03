@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import config  # noqa: E402
 
 STRESS_ROOT = os.path.join(config.EXPERIMENTS, "run", "stress")
-MAIN_MODEL = os.path.join(config.SB, 'models', 'fused-rem-v5')
+MAIN_MODEL = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/models/fused-rem-v5"
 QS = ["你是谁？", "今天过得怎么样？", "还记得开学第一天吗？", "这学期有什么值得记住的事？"]
 # 断点 → 最近 adapter
 PLAN = [(15, "rem_stress_d10"), (30, "rem_stress_d30"), (45, "rem_stress_d40"),

@@ -66,9 +66,23 @@ def main():
         bak.close()
         con.execute("DELETE FROM mood_states")
         con.execute("DELETE FROM mood_intraday")
+        # ★2026-09-02 W轮排查修复: 漏清 mood_graph —— 它和 mood_states 同库但从未被 reset 清过,
+        #   每轮 +7000 边全累积(K+V2+W = 17012 边, ts 跨 89 天):
+        #   ①ToM 读情绪史/联结价值/图谱训练样本(extract_graph_samples)被旧轮污染
+        #   ②event_id 每轮重复 ev-d{day}-{i}, 再巩固 UPDATE 会误改旧轮同 id 边
+        con.execute("DELETE FROM mood_graph")
+        for _t in ("entities", "relations", "doc_entities", "docs", "meta_kv"):
+            try:
+                con.execute(f"DELETE FROM {_t}")
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            con.execute("DELETE FROM sqlite_sequence")
+        except Exception:  # noqa: BLE001
+            pass
         con.commit()
         con.close()
-        print("  ✓ mood: 快照 + 清空")
+        print("  ✓ mood: 快照 + 清空(mood_states/intraday/**mood_graph**)")
     # L3
     if os.path.isdir(L3):
         shutil.move(L3, os.path.join(arch, "l3"))
@@ -80,7 +94,11 @@ def main():
         print(f"  ✓ dataset: {os.path.basename(d)}")
     # logs
     if not keep_log:
-        for f in ("stress.log", "analysis.md", "proactive-live.jsonl"):
+        # ★2026-09-02 K轮复盘修复: 补归档 feedback/cognition/prediction-errors——
+        #   这三个 live 文件是 append 累积的, 不归档 → 跨轮污染(新轮训练混入旧轮反馈/认知/判断,
+        #   prediction-errors 两轮 day 编号相同还混淆日常 ToMi 统计与 ToM 置信)
+        for f in ("stress.log", "analysis.md", "proactive-live.jsonl",
+                  "feedback-live.jsonl", "cognition-live.jsonl", "prediction-errors.jsonl"):
             mv(os.path.join(STRESS, f), os.path.join(arch, "logs"), "log")
     print(f"\n✅ 重置完成 → archive/{stamp}/ ｜ 输入 inputs/ 保留")
 

@@ -80,8 +80,12 @@ def verify_answer(answer: str, query: str, facts: list[str] | None = None, k: in
             conflict_src = next((src for src, x in sf if x["type"] == a["type"] and x["value"] != a["value"]), "")
             conflicts.append({"type": a["type"], "answer_value": a["value"],
                               "fact_value": sorted(known)[0], "fact_src": conflict_src[:120]})
+    # ★2026-09-01 修复(代码复盘): 返回加 verdict 键——conflict(有冲突)/pass(有事实可比且无冲突)/
+    #   none(无源事实可比)。此前 sample_persona 用 vr.get("verdict","unknown") 恒 unknown(死代码)
+    verdict = "conflict" if conflicts else ("pass" if sf else "none")
     return {"conflicts": conflicts, "answer_facts": af,
-            "source_facts": sf[:20], "source_count": len(facts)}
+            "source_facts": sf[:20], "source_count": len(facts),
+            "verdict": verdict}
 
 
 def intercept(answer: str, query: str, facts: list[str] | None = None, k: int = 5) -> dict:

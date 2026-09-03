@@ -3,7 +3,7 @@
 
 输出：experiments/run/stress/inputs/day-NNN.json
   每条: {"day", "date", "messages": [{"text", "sentiment", "weight"}], "events": [...]}
-模拟用户（U-UNIV 新生）入学后与雷姆的沟通，覆盖三个学期阶段。
+模拟用户（UCSB 新生）入学后与雷姆的沟通，覆盖三个学期阶段。
 """
 from __future__ import annotations
 import json

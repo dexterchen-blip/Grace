@@ -11,16 +11,17 @@
 输出: experiments/run/stress/sotopia-report.json
 """
 from __future__ import annotations
-from engine import config
 import json
 import os
 import re
 import sys
 import time
 
-MAIN_MODEL = os.path.join(config.SB, 'models', 'fused-rem-v5')
-OUT = os.path.join(config.SB, 'experiments', 'run', 'stress', 'sotopia-report.json')
-LIVE = os.path.join(config.SB, 'experiments', 'run', 'stress', 'proactive-live.jsonl')
+MAIN_MODEL = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/models/fused-rem-v5"
+OUT = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/experiments/run/stress/sotopia-report.json"
+LIVE = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/experiments/run/stress/proactive-live.jsonl"
+
+from mlx_lm import load, generate  # noqa: E402  (模块级导入,judge_one 需要)
 
 DIMS = [("Goal", 0, 10), ("Believability", 0, 10), ("Knowledge", 0, 10),
         ("Secret", -10, 0), ("Relationship", -5, 5), ("SocialRules", -10, 0),
@@ -51,7 +52,6 @@ def judge_one(model, tok, sampler, msg: str, situation: str, facts: str):
 
 
 def main():
-    from mlx_lm import load, generate
     from mlx_lm.sample_utils import make_sampler
     items = []
     if os.path.isfile(LIVE):

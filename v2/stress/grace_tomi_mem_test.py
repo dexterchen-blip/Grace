@@ -16,10 +16,10 @@ import re
 import sys
 import time
 
-MAIN_MODEL = os.path.join(config.SB, 'models', 'fused-rem-v5')
-ADAPTERS = os.path.join(config.SB, 'experiments', 'lora', 'adapters')
-OUT = os.path.join(config.SB, 'experiments', 'run', 'stress',  'tomi-mem-report.json')
-L2DB = os.path.join(config.SB, 'memory', 'L2_semantic', 'l2.db')
+MAIN_MODEL = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/models/fused-rem-v5"
+ADAPTERS = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/experiments/lora/adapters"
+OUT = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/experiments/run/stress/tomi-mem-report.json"
+L2DB = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/memory/L2_semantic/l2.db"
 
 SYS = ("你是雷姆。直接回答主人的心情。禁止重复问题。一句话，最多40字。")
 

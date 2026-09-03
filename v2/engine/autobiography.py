@@ -105,8 +105,8 @@ def hallucination_guard(entity: str, claim: str, db: str = None) -> bool:
     if not facts:
         return False
     pool = " ".join(facts)
-    # ① 声明中的数字/金额/专名：必须全部在证据里（20000/10万/免疫/TB/ELPE…）
-    keys = re.findall(r"\d+月\d+日|\d{4}|\d+万|20000|托福|ELPE|U-UNIV|免疫|TB|12345|Alex|Canvas|龙|龙骑", claim)
+    # ① 声明中的数字/金额/专名：必须全部在证据里（16666/10万/免疫/TB/ELPE…）
+    keys = re.findall(r"\d+月\d+日|\d{4}|\d+万|16666|托福|ELPE|UCSB|免疫|TB|29225|Braeden|Canvas|龙|龙骑", claim)
     if keys:
         return all(k in pool for k in keys)
     # ② 无数字/专名 → 主题词须与证据相关（避免「主人养了条龙」这类无凭据断言）

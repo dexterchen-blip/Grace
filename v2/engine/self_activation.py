@@ -53,7 +53,8 @@ def _mood_signal(attention: dict) -> dict:
 
 
 def evaluate(attention: dict, event_text: str, day: int | None = None,
-             last_proactive_day: int | None = None) -> dict:
+             last_proactive_day: int | None = None,
+             graph_db: str | None = None) -> dict:
     """自激发评估 → ★2026-09-01 驱动三源(脑科学版, 用户: 主动找我要升级):
     ①事件价值(SEEKING/多巴胺) = 注意力显著度 + 情绪信号 + 时限(已有)
     ②联结价值(催产素×多巴胺奖励) = 与主人的记忆关联深度(越亲密越主动)
@@ -62,6 +63,7 @@ def evaluate(attention: dict, event_text: str, day: int | None = None,
     2026-08-27 修：memory_driven 只由「时限/重要词」触发（截止/明天/due 等），
     仅有关联记忆不算触发源——否则夜班摄入的每条内容都会自激发（99% 话痨）。
     2026-09-01：联结维护单独成源（久未主动→基准提升），不靠时限词。
+    ★2026-09-02 修复(复核N4/用户): 联结价值接双图谱情绪史深度(原只用浅层 memory_links 条数)。
     """
     sal = attention["salience"]
     sig = _mood_signal(attention)
@@ -86,6 +88,26 @@ def evaluate(attention: dict, event_text: str, day: int | None = None,
     # ② 联结价值(催产素×多巴胺): 与主人的记忆关联越深 → 越主动(社交奖励)
     if has_links:
         score += 0.1 + 0.05 * min(2, len(links))   # 1条关联+0.1, 2条以上+0.2
+    # ★2026-09-02 复核N4修复: 联结价值接双图谱(双图谱无 relationship 类型边 →
+    #   用"她对主人生活的关注密度"代理 = 最近7天(图谱最大ts窗口)emotion边密度
+    #   + 积累了解的实体多样性。越亲密(记录越密/越了解) → 主动奖励越大
+    #   (脑科学: 伏隔核对亲密者的预期奖励更强, 不是对谁都主动)。
+    if graph_db and os.path.isfile(graph_db):
+        try:
+            import sqlite3 as _sq
+            _con = _sq.connect(graph_db)
+            _n7 = _con.execute(
+                "SELECT COUNT(*) FROM mood_graph WHERE edge_type='emotion' "
+                "AND ts >= (SELECT MAX(ts) FROM mood_graph) - 604800").fetchone()[0]
+            _entities = _con.execute(
+                "SELECT COUNT(DISTINCT entity) FROM mood_graph "
+                "WHERE edge_type='emotion' AND entity != ''").fetchone()[0]
+            _con.close()
+            _bond = 0.05 if _n7 < 50 else (0.15 if _n7 < 200 else 0.25)  # 最近7天密度分档
+            _bond += min(0.1, 0.01 * _entities)                           # 实体多样性(了解多少方面)
+            score += min(0.3, _bond)
+        except Exception:  # noqa: BLE001
+            pass
     # ③ 联结维护(ACC 社会痛觉): 久未主动 → "想主人了" → 提升基准
     if last_proactive_day is not None and day is not None:
         gap = day - last_proactive_day
@@ -136,7 +158,8 @@ def decide(attention: dict, event_text: str, decide_fn=None, tom: dict | None = 
               （ToM 紧密链接双轨图谱：情绪史+暗注意力做读心依据）。
     day/last_proactive_day: 联结维护源(ACC 社会痛觉)——久未主动 → 主动。
     """
-    ev = evaluate(attention, event_text, day=day, last_proactive_day=last_proactive_day)
+    ev = evaluate(attention, event_text, day=day, last_proactive_day=last_proactive_day,
+                  graph_db=graph_db)
     if decide_fn is not None:
         try:
             return decide_fn(attention, event_text)

@@ -97,16 +97,21 @@ def derive(events: list[dict], db: str = None, ts: float | None = None) -> dict:
 
     events: [{"text": ..., "sentiment": -1..1, "weight": 0..1}, ...]
     ts 可注入（夜班推演时刻/测试模拟时间线）；默认现在。
-    完整 mood_engine（35B 推演）是开放问题，本版先给可跑的规则引擎骨架。
+    V2.1 单模型 27B（不预留 35B 接入——2026-08-29 用户：V2.1 已很占内存）。
     """
     ts = ts or time.time()
     prev = latest(db)
     base = prev["intensity"] if prev else config.MOOD["default_intensity"]
-    delta = 0.0
     triggers = []
+    _wsum = 0.0
     for e in events:
-        delta += (e.get("sentiment", 0.0) * e.get("weight", 0.5))
+        _wsum += e.get("weight", 0.5)
         triggers.append(e.get("text", "")[:80])
+    # ★2026-09-02 修复(V2轮believed"兴奋"坍缩真根): delta 原是**求和**——真实书库每天 100+ 条,
+    #   5% 正消息(每条+0.45)求和即 +3.45 → delta_mapped 顶格 1 → mood_states 天天"兴奋" 1.0
+    #   → owner_mood 兴奋 → ToM believed 恒"兴奋"(V2 轮 6392 条 + 15天测试 9/10 同源, 与模板无关)。
+    #   人脑当日情绪 = 平均效价(消息多不会让情绪更极端) → 改加权均值(除以 Σweight)。
+    delta = sum(e.get("sentiment", 0.0) * e.get("weight", 0.5) for e in events) / max(_wsum, 1e-9)
     # 情绪增量映射到 0..1（负=坏事趋 0，正=好事趋 1）
     delta_mapped = max(0.0, min(1.0, (delta + 1) / 2))
     # 心态 = 昨日 × 0.7 + 今日项 × 0.3
@@ -142,33 +147,6 @@ def reset(db: str = None) -> None:
     con.commit()
     con.close()
     print("[v2-mood] 心态已重置（当日态归位）")
-
-
-def derive_with_35b(events: list[dict], api_url: str = None, db: str = None) -> dict:
-    """35B 推演版（M3-① 骨架，白天不跑——35B 错峰铁律）。
-
-    完整版：夜班把当日事件流喂给 35B（沙盒端口 18200），让它产出 mood_label/intensity/triggers，
-    再走平滑衰减 + 人审闸门。当前骨架：无 35B 服务时回退规则引擎。
-    """
-    import urllib.request
-    api_url = api_url or "http://127.0.0.1:18200/v1/chat/completions"
-    try:
-        prompt = ("你是心态分析师。根据以下今日事件，判断 AI 助手的明日心态"
-                  "（mood_label ∈ " + str(config.MOOD["labels"]) +
-                  "，intensity 0-1，并列出触发事件）。事件：\n" +
-                  "\n".join(f"- {e.get('text','')} (sentiment={e.get('sentiment',0)})" for e in events))
-        body = json.dumps({"model": "Qwen3.5-35B-A3B", "messages": [{"role": "user", "content": prompt}],
-                           "max_tokens": 200}).encode()
-        req = urllib.request.Request(api_url, data=body, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            out = json.loads(r.read().decode())
-        text = out["choices"][0]["message"]["content"]
-        # 粗解析（完整版用 json 输出协议）
-        label = next((l for l in config.MOOD["labels"] if l in text), "平静")
-        return derive([{"text": f"35B推演: {text[:100]}", "sentiment": 0.5, "weight": 0.5}], db=db)
-    except Exception as e:  # noqa: BLE001
-        print(f"[v2-mood] 35B 推演不可用（{e}），回退规则引擎")
-        return derive(events, db=db)
 
 
 def timeline(db: str = None, limit: int = 7) -> list[dict]:

@@ -14,11 +14,14 @@
   --model   加载 5B 做兜底理解(慢)
 """
 from __future__ import annotations
+import os
+# ★2026-09-02 复核N1修复: 从 v2/engine/ 直接跑时 sys.path 无 v2/ → import config 必失败
+#   (sentinel.err.log ModuleNotFoundError 实锤)。补 v2/ 到 sys.path(与 mood_graph 等一致)。
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 import json
-import os
 import re
-import sys
 import time
 from datetime import datetime
 

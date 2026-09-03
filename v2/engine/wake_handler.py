@@ -8,9 +8,13 @@
   ./run.sh .venv/bin/python3 v2/engine/wake_handler.py
 """
 from __future__ import annotations
+import os
+import sys
+# ★2026-09-02 审计修复: 裸 import config 从 engine/ 直跑必 ModuleNotFoundError
+#   (9/2 01:49 sentinel.py 同款已修, 此处复发)——补 v2/ 进 sys.path, 与 engine 其他模块一致
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import config
 import json
-import os
 import subprocess
 import time
 from datetime import datetime

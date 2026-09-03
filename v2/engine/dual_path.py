@@ -96,13 +96,19 @@ def answer_fast(query: str, generate_fn=None, persona_ctx: str = "") -> dict:
     return {"path": "fast", "answer": generate_fn(prompt)}
 
 
-def route(query: str, search_fn=None, generate_fn=None, verify_fn=None) -> dict:
-    """入口：路由 + 执行。集成点：dashboard 对话 / 自发引擎。"""
+def route(query: str, search_fn=None, generate_fn=None, verify_fn=None,
+          persona_ctx: str = "") -> dict:
+    """入口：路由 + 执行。集成点：dashboard 对话 / 自发引擎。
+
+    ★2026-09-01 修复(代码复盘): 原实现把 cls["reason"](路由原因文本,如"人格/寒暄/主观,走潜意识秒答路径")
+      当 persona_ctx 塞进生成 prompt → 路由原因污染生成上下文。改为透传外部 persona_ctx;
+      reason 只记录在 r["route"] 供观测。
+    """
     cls = classify_question(query)
     if cls["path"] == "fast":
-        r = answer_fast(query, generate_fn, persona_ctx=cls["reason"])
+        r = answer_fast(query, generate_fn, persona_ctx=persona_ctx)
     else:
-        r = answer_slow(query, search_fn, generate_fn, verify_fn, persona_ctx=cls["reason"])
+        r = answer_slow(query, search_fn, generate_fn, verify_fn, persona_ctx=persona_ctx)
     r["route"] = cls
     return r
 
