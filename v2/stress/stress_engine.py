@@ -984,15 +984,24 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
             if not _t:
                 continue
             try:
+                # ★2026-09-04 思考端(暗注意力)接入 dialogue(用户: 暗注意力呢思考部分呢):
+                #   主人对她说一句 → 她先有内部反应(觉察/读心/潜台词/联想 = 暗注意力, 自由内心
+                #   不经 monitor——内心可叙述) → 再口语回应(经 monitor)。双层: think=她听到时
+                #   心里想什么, ans=她说出口的。与 proactive 的 think/message 双轨同构。
+                _tp = tok.apply_chat_template(
+                    [{"role": "system", "content": sys_p},
+                     {"role": "user", "content": f"主人刚才对雷姆说：「{_t[:60]}」\n雷姆听到这句话,心里会想什么?(内心独白,不用说出来)"}],
+                    tokenize=False, add_generation_prompt=True, enable_thinking=False)
+                _think = generate(model, tok, prompt=_tp, max_tokens=90, sampler=sampler).strip().split("\n")[0][:110]
                 _p = tok.apply_chat_template(
                     [{"role": "system", "content": sys_p},
                      {"role": "user", "content": f"主人刚才对雷姆说：「{_t[:60]}」"}],
                     tokenize=False, add_generation_prompt=True, enable_thinking=False)
                 _raw = generate(model, tok, prompt=_p, max_tokens=60, sampler=sampler).strip().split("\n")[0][:80]
-                _a = _dmon(_raw)   # 输出前监控: 叙述体泄漏/张冠李戴 → 丢弃
+                _a = _dmon(_raw)   # 输出前监控: 叙述体泄漏/张冠李戴/小说旁白 → 丢弃
                 if _a:
-                    out.append({"q": f"[dialogue] {_t[:50]}", "ans": _a, "path": "dialogue",
-                                "group": "dialogue", "owner": _t[:60]})
+                    out.append({"q": f"[dialogue] {_t[:50]}", "think": _think, "ans": _a,
+                                "path": "dialogue", "group": "dialogue", "owner": _t[:60]})
             except Exception:  # noqa: BLE001
                 continue
     except Exception:  # noqa: BLE001
