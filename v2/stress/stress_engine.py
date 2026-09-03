@@ -754,7 +754,7 @@ def _proactive_state(event_text: str, tom: dict | None, att: dict | None, day: i
     return st
 
 
-def sample_persona(adapter_name: str, day: int) -> list[dict]:
+def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> list[dict]:
     """用 27B + 当前 adapter 采样 4 题（人格一致性观测）。
 
     ★ 2026-08-29 全模块协同：
@@ -954,6 +954,33 @@ def sample_persona(adapter_name: str, day: int) -> list[dict]:
                 a = "(err)"
             out.append({"q": f"[tomi:{g}] {q}", "ans": a, "path": "tomi",
                         "group": g, "reality": _reality})
+    except Exception:  # noqa: BLE001
+        pass
+    # ★2026-09-03 ④ 对话断点(用户: 线上 LLM 与 Grace 输出端对话测试产物): 模型窗口内, 主人对她说
+    #   的真实句(书库当天) → 她经输出层口语回应(本地模型 + expression.monitor 拦截内心泄漏)。
+    #   供断点时刻的自动化(线上 LLM)读取 dialogue 并以主人身份接话评估——Grace 输出端对话测试。
+    #   合规: dialogue 仅评估输入(与 ToMi 30 题同性质), 不进训练, 不违反成长语料铁律。
+    try:
+        from engine.expression import monitor as _dmon
+        if msgs:
+            _cands = [m.get("text", "") for m in msgs
+                      if m.get("text") and 6 <= len(m["text"]) <= 70
+                      and not m["text"].startswith("[") and "noreply@" not in m["text"]]
+            # 优先直接对话口气(含?/!/直接称呼), 无则最近 3 条普通文本
+            _picks = [t for t in _cands if re.search(r"[?!？!]|雷姆|麻烦|帮我|提醒", t)][-3:] or _cands[-3:]
+            for _t in _picks:
+                try:
+                    _p = tok.apply_chat_template(
+                        [{"role": "system", "content": sys_p},
+                         {"role": "user", "content": f"主人对雷姆说：「{_t[:60]}」\n雷姆会怎么回应？只输出雷姆说的话。"}],
+                        tokenize=False, add_generation_prompt=True, enable_thinking=False)
+                    _raw = generate(model, tok, prompt=_p, max_tokens=60, sampler=sampler).strip().split("\n")[0][:80]
+                    _a = _dmon(_raw)   # 输出前监控: 叙述体泄漏/张冠李戴 → 丢弃
+                    if _a:
+                        out.append({"q": f"[dialogue] {_t[:50]}", "ans": _a, "path": "dialogue",
+                                    "group": "dialogue", "owner": _t[:60]})
+                except Exception:  # noqa: BLE001
+                    continue
     except Exception:  # noqa: BLE001
         pass
     # ★2026-09-02 审计修复: 断点采样后释放模型——此前主进程持 fused-rem-v5 ~14G 直到轮末,
@@ -1201,10 +1228,20 @@ def main():
                 except Exception:  # noqa: BLE001
                     pass
             _fb_day = 0   # ★2026-09-02 限量: 每天最多 3 条 feedback 进训练(防真实强度下占比暴增)
+            # ★2026-09-03 ② 中性觉察通道: P0 之外每天低权判断 ≤5 条中性消息——她"对日常也保持觉察"。
+            #   中性消息 believed(记忆底色) vs real(平静) → pos-neu 类别错位 → feedback 冲突对供给恢复
+            #   (Z 轮仅 1 条断粮)。副作用控制: soft 消息只做判断+feedback, 跳过 cognition/decide/proactive;
+            #   feedback 仍受 _fb_day<3 cap(高显著错位先占, 中性吃剩余) → 总量 ~30-90/轮 = K 轮量级不失控。
+            import random as _rnd
+            _neutral_idx = [i for i, m in enumerate(msgs) if m.get("text") and not _sel[i]]
+            _rnd.shuffle(_neutral_idx)
+            _soft = set(_neutral_idx[:5])
             for i, m in enumerate(msgs):
                 att = _atts[i]   # ★P0: 复用门控缓存(不再重复 generate_attention)
                 if not _sel[i]:
-                    continue     # ★P0 门控: 低显著琐碎消息不做 ToM 判断/feedback/cognition/decide
+                    if i not in _soft:
+                        continue     # ★P0 门控: 低显著琐碎消息不做 ToM 判断/feedback/cognition/decide
+                    # 中性觉察(soft): 走判断+feedback 但后面跳过 c/d/p
                 # ★2026-09-01 修复断链: ToM 读双图谱(情绪史 mood_db + 暗注意力 hidden_ctx)
                 #   之前只传文本+当日心态——双图谱→ToM 通道从未接线(接口在, 调用没接)
                 #   = "她的 ToM 读她的双图谱"终于真正生效(情绪史+潜台词做读心依据)
@@ -1268,6 +1305,8 @@ def main():
                         with open(_cerr, "a", encoding="utf-8") as _f:
                             _f.write(json.dumps({"day": day, "believed": _believed, "real": _real,
                                                  "correct": _bel_cat == _real_cat,
+                                                 "bel_cat": _bel_cat, "real_cat": _real_cat,  # ★③评估分层: 三格(pos/neu/neg)
+                                                 "soft": (not _sel[i] and i in _soft),        # ★②中性觉察标记
                                                  "pe": round(_pe, 2), "w": _w}, ensure_ascii=False) + "\n")
                     except Exception:  # noqa: BLE001
                         pass
@@ -1305,6 +1344,10 @@ def main():
                             _fb_day += 1
                 except Exception:  # noqa: BLE001
                     pass
+                # ★2026-09-03 ② 中性觉察: soft 消息只判断+feedback, 不进 cognition/decide/proactive
+                #   (防中性日常噪音触发主动/记忆污染——她不会为一条中性通知想主人)
+                if not _sel[i] and i in _soft:
+                    continue
                 # ★2026-09-01 驱动三源: 联结维护(ACC 社会痛觉)——久未主动 → 想主人 → 主动
                 _last_pro = max((x["day"] for x in proactive), default=1) if proactive else 1
                 r = decide(att, m["text"], tom=tom, day=day, last_proactive_day=_last_pro,
@@ -1481,7 +1524,7 @@ def main():
         # ④ 每 sample_every 天采样 + 断点（续跑：已有断点跳过）
         if day % args.sample_every == 0 and not _snapshot_done(day):
             last = trained[-1]["adapter"] if trained else None
-            persona = sample_persona(last, day) if last else []
+            persona = sample_persona(last, day, msgs) if last else []
             snap = snapshot(day, last or "none", persona)
             with open(os.path.join(STRESS_ROOT, f"day-{day:03d}.json"), "w", encoding="utf-8") as f:
                 json.dump(snap, f, ensure_ascii=False, indent=2)

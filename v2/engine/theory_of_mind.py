@@ -56,31 +56,33 @@ def infer_owner_state(event_text: str, mood_label: str = "平静",
        双图谱上下文由 self_activation._tom_from_graph 构建后传入（ToM 下属潜意识）。
     """
     # ★ 主人情绪推断（2026-08-29 用户：ToM 应自己判断主人情绪,不是外部传入）
-    # 推断链：显式传入 > 情绪图谱历史 > 事件文本情感推断（读心兜底）
+    # 推断链：显式传入 > [现场强度分权] > 情绪图谱历史 > 事件文本情感推断（读心兜底）
+    # ★2026-09-03 评估隔离 2.0(用户拍板 ① ToM 融合规则): Z 轮暴露"图谱史总压文本"过度修正
+    #   → believed 兴奋高估(127 vs 55: 记忆底色垄断)。改预测编码式融合——似然强则似然主导:
+    #     强现场(|s|≥0.5: 主人明确说"考砸了/拿奖学金")→ 读现场(她不会无视);
+    #     弱/中性现场 → 图谱史先验补位(记忆底色, 可滞后=日常假信念温床)。
+    #   防 bug: 中等现场(0.3-0.5)与史冲突多为类别内强度差(pos↔pos), 不产生荒谬类别错;
+    #           阈值 0.5 保证"强现场不被记忆带偏"(考砸不会判兴奋)。
     emotion = mood_label
-    if mood_db and emotion == "平静":
-        # 从事件实体查情绪史（考试→低落史 说明主人最近压力大）
-        # ★2026-09-03 评估隔离(用户: 实现评估隔离): 图谱史【先于】现场文本——
-        #   恢复 docs/Grace-V2.1-全模块协同逻辑.md §5 优先级(显式传入 > 情绪图谱史 >
-        #   事件情感推断 > 暗注意力潜台词)。此前代码把文本重算放在图谱史前, 而文本重算
-        #   与评估端 real(同一 assess)完全同源 → X轮 believed≡real 镜像(100%假象)+feedback断供。
-        #   图谱史优先 = believed 反映"她记忆中主人的底色"(top-down), 与 real(现场标注)结构性错位
-        #   (记忆 vs 当前 = 假信念的日常形态), feedback 冲突对恢复供给。
-        ent = entity_of(event_text)
-        hist = query_mood_history(ent, db=mood_db)
-        # 强度门槛 = 信号质量闸门(弱记忆不该压过当下文本), 不是耦合开关
-        if hist and float(hist[0].get("intensity") or 0.0) >= 0.4:
-            emotion = hist[0]["mood_label"]
     if emotion == "平静":
         try:
             from attention import _sentiment_of
-            s = _sentiment_of(event_text)
-            if abs(s) >= 0.3:
+            _s = _sentiment_of(event_text)
+            if abs(_s) >= 0.5:
+                # 强现场信号(似然强): 直接读现场, 图谱史不覆盖(预测编码: 似然主导)
                 from mood_graph import mood_label_of
-                # ★2026-09-03 修复: 原 abs(s)+0.3 使 intensity 从 0.6 起步(凭空注水)
-                #   → s=-0.3 判「低落」而非更保守的「焦虑」, 系统性偏强标签。
-                #   intensity 本就等于 |sentiment|, 不该再加 0.3。
-                emotion = mood_label_of(s, abs(s))
+                emotion = mood_label_of(_s, abs(_s))
+            elif mood_db:
+                # 弱/中性现场(似然弱): 图谱史先验补位(记忆底色)——可滞后于现实 = 日常假信念
+                ent = entity_of(event_text)
+                hist = query_mood_history(ent, db=mood_db)
+                # 强度门槛 = 信号质量闸门(弱记忆不该压过当下文本), 不是耦合开关
+                if hist and float(hist[0].get("intensity") or 0.0) >= 0.4:
+                    emotion = hist[0]["mood_label"]
+                if emotion == "平静" and abs(_s) >= 0.3:
+                    # 中等现场信号 + 无强史: 文本读心兜底
+                    from mood_graph import mood_label_of
+                    emotion = mood_label_of(_s, abs(_s))
         except Exception:  # noqa: BLE001
             pass
     # ★ 暗注意力参与读心（2026-08-29）：潜台词是主人没说出口的真实状态
