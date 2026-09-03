@@ -29,21 +29,13 @@ import config  # noqa: E402
 
 
 def _sentiment_of(text: str) -> float:
-    """事件情绪初判（-1..1）：情感词匹配 + 社交价值（2026-08-28）。
+    """事件情绪初判（-1..1）：统一效价评估（engine/sentiment.py, 2026-09-03 双轴化）。
 
-    社交邀约（一起/等我/约/聚餐/找我）→ 微正：真人会把「朋友约我」当重要社交信号。
+    ★2026-09-03 Phase 0: 原词典仅 14+14 词 + 社交值 → 88.8% sentiment=0 → ToM 现实标签
+    84% 假"平静"。改走统一 sentiment.assess() 分层效价词表（含否定削弱）。
     """
-    neg = re.compile(r"考砸|难过|焦虑|压力|累|失眠|想家|失败|担心|紧张|低落|难受|烦")
-    pos = re.compile(r"开心|高兴|成功|通过|顺利|棒|喜欢|不错|好消息|期待|兴奋|好棒|通过")
-    social = re.compile(r"一起|等我|找我|约|聚餐|吃饭|跑步|接龙|社团|外拍|来我家|操场|集合")
-    s = 0.0
-    if pos.search(text):
-        s += 0.6
-    if neg.search(text):
-        s -= 0.7
-    if social.search(text) and "广告" not in text and "优惠" not in text:
-        s += 0.35               # 社交价值：邀约/陪伴信号（真人会注意）
-    return max(-1.0, min(1.0, s))
+    from engine.sentiment import valence_of
+    return valence_of(text)
 
 
 def generate_attention(event_text: str, mood: dict | None = None,

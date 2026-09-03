@@ -23,26 +23,19 @@ import config  # noqa: E402
 
 TZ = timezone(timedelta(hours=8))  # Asia/Shanghai
 
-# 情绪词表(构建器轻量评估 sentiment, 压测引擎 attention 有更细的)
-_POS = ("开心", "高兴", "兴奋", "快乐", "期待", "满意", "棒", "好", "喜欢", "爱", "哈哈", "嘿嘿",
-        "恭喜", "顺利", "漂亮", "赞", "nice", "太好了", "爽", "offer", "奖学金", "录取")
-_NEG = ("难过", "伤心", "低落", "焦虑", "烦", "担心", "哭", "累", "崩溃", "压力", "考砸", "挂了",
-        "失败", "糟糕", "生气", "无语", "绝望", "紧张", "慌", "问题", "麻烦", "没钱", "房租", "挂科")
-_NEUT = ("哦", "嗯", "知道了", "好的", "收到", "ok", "行", "可以", "看看", "问一下")
-
 # 清洗: 转账/CDATA/碎片/纯数字/链接
 _SKIP = re.compile(
     r"(转账|CDATA|微信转账|发了一个红包|\[红包\]|\[转账\]|^https?://|^\d{4,}$|^[a-f0-9]{16,}$|^\.$|^。$|^\s*$)")
 
 
 def _sentiment(text: str) -> float:
-    p = sum(1 for w in _POS if w in text)
-    n = sum(1 for w in _NEG if w in text)
-    if p and not n:
-        return round(min(0.9, 0.3 + 0.15 * p), 2)
-    if n and not p:
-        return round(max(-0.9, -0.3 - 0.15 * n), 2)
-    return 0.0
+    """书库情绪标注 —— ★2026-09-03 Phase 0: 走统一 engine/sentiment.assess()（分层效价词表）。
+
+    原 _POS/_NEG 词表仅 24+23 词且计次(0.3+0.15p) → 88.8% 消息 sentiment=0（"谢谢/催办/
+    面签"都漏）→ derive 当日心态/图谱情绪边失真。统一模块含强/中/弱分层 + 否定削弱。
+    """
+    from engine.sentiment import assess
+    return assess(text)["valence"]
 
 
 def _clean(text: str) -> str:

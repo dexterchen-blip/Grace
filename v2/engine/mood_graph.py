@@ -187,8 +187,13 @@ def dual_graph_ingest(event_text: str, event_id: str = "", db: str = None,
     """
     ts = ts or time.time()
     entity = entity_of(event_text)
-    sentiment = sentiment if sentiment is not None else _sentiment_of(event_text)
-    intensity = abs(sentiment)
+    # ★2026-09-03 Phase 0: intensity 由 arousal 驱动（Russell 双轴）——原 abs(sentiment) 把
+    #   高唤醒中性事件(面签/截止/登录提醒)压成 0.1「平静」→ 图谱情绪边扁平。
+    #   valence 决定标签方向, arousal 决定边强度; 外部传 sentiment 时仍以它为准(书库重标值)。
+    from engine.sentiment import assess as _assess
+    _a = _assess(event_text)
+    sentiment = sentiment if sentiment is not None else _a["valence"]
+    intensity = max(abs(sentiment), _a["arousal"])
     mood_label = mood_label_of(sentiment, intensity + 0.3)
     eid = add_mood_edge(entity, mood_label, max(0.1, intensity), ts, event_id, event_text, db)
     hid = add_hidden_edge(entity, mood_label, max(0.1, intensity), ts, event_id, event_text, db)
@@ -256,8 +261,10 @@ def query_event(event_id: str, db: str = None) -> dict:
 def reevaluate(entity: str, event_text: str, sentiment: float = None,
                db: str = None, ts: float = None) -> dict:
     """⑤ 回固化情绪重估：事件重访/回忆时，以最新心境重新评估情绪边（情绪可被重新评估，内容永存）。"""
-    sentiment = sentiment if sentiment is not None else _sentiment_of(event_text)
-    intensity = max(0.1, abs(sentiment))
+    from engine.sentiment import assess as _assess
+    _a = _assess(event_text)
+    sentiment = sentiment if sentiment is not None else _a["valence"]
+    intensity = max(0.1, abs(sentiment), _a["arousal"])
     label = mood_label_of(sentiment, intensity + 0.3)
     eid = add_mood_edge(entity, label, intensity, ts or time.time(),
                         f"re-{int(time.time())}", f"(重估) {event_text[:80]}", db)
