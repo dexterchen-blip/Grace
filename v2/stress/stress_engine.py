@@ -1236,9 +1236,14 @@ def main():
                     from attention import _sentiment_of
                     from mood_graph import mood_label_of
                     _s = _sentiment_of(m["text"])
-                    # ★2026-09-03 修复: 去 +0.3 强度注水（与 theory_of_mind 推断链同步，
-                    #   real/believed 用同一公式，改两边保持口径一致）
-                    _real = mood_label_of(_s, abs(_s)) if abs(_s) >= 0.3 else "平静"
+                    # ★2026-09-03 评估隔离(用户拍板): real 用消息自带 sentiment 字段(书库 relabel
+                    #   离线全量重标值)作独立标注通道——书库字段与运行时 believed 的 ToM 认知路径
+                    #   (图谱史记忆先验+心态)分离, 打破 X 轮 believed≡real 同源镜像(100% 假象)。
+                    _s_real = m.get("sentiment")
+                    if _s_real is None:
+                        _s_real = _sentiment_of(m["text"])
+                    # ★2026-09-03 修复: 去 +0.3 强度注水（与 theory_of_mind 推断链同步）
+                    _real = mood_label_of(_s_real, abs(_s_real)) if abs(_s_real) >= 0.3 else "平静"
                     _believed = tom.get("emotion", "平静")
                     _neg = ("低落", "焦虑", "烦躁", "难过", "生气")
                     _pos = ("开心", "兴奋", "轻微兴奋", "快乐", "愉悦")

@@ -58,22 +58,46 @@ def infer_owner_state(event_text: str, mood_label: str = "平静",
     # ★ 主人情绪推断（2026-08-29 用户：ToM 应自己判断主人情绪,不是外部传入）
     # 推断链：显式传入 > 情绪图谱历史 > 事件文本情感推断（读心兜底）
     emotion = mood_label
+    if mood_db and emotion == "平静":
+        # 从事件实体查情绪史（考试→低落史 说明主人最近压力大）
+        # ★2026-09-03 评估隔离(用户: 实现评估隔离): 图谱史【先于】现场文本——
+        #   恢复 docs/Grace-V2.1-全模块协同逻辑.md §5 优先级(显式传入 > 情绪图谱史 >
+        #   事件情感推断 > 暗注意力潜台词)。此前代码把文本重算放在图谱史前, 而文本重算
+        #   与评估端 real(同一 assess)完全同源 → X轮 believed≡real 镜像(100%假象)+feedback断供。
+        #   图谱史优先 = believed 反映"她记忆中主人的底色"(top-down), 与 real(现场标注)结构性错位
+        #   (记忆 vs 当前 = 假信念的日常形态), feedback 冲突对恢复供给。
+        ent = entity_of(event_text)
+        hist = query_mood_history(ent, db=mood_db)
+        # 强度门槛 = 信号质量闸门(弱记忆不该压过当下文本), 不是耦合开关
+        if hist and float(hist[0].get("intensity") or 0.0) >= 0.4:
+            emotion = hist[0]["mood_label"]
     if emotion == "平静":
         try:
             from attention import _sentiment_of
             s = _sentiment_of(event_text)
             if abs(s) >= 0.3:
                 from mood_graph import mood_label_of
-                emotion = mood_label_of(s, abs(s) + 0.3)
+                # ★2026-09-03 修复: 原 abs(s)+0.3 使 intensity 从 0.6 起步(凭空注水)
+                #   → s=-0.3 判「低落」而非更保守的「焦虑」, 系统性偏强标签。
+                #   intensity 本就等于 |sentiment|, 不该再加 0.3。
+                emotion = mood_label_of(s, abs(s))
         except Exception:  # noqa: BLE001
             pass
-    if mood_db and emotion == "平静":
-        # 从事件实体查情绪史（考试→低落史 说明主人最近压力大）
-        ent = entity_of(event_text)
-        hist = query_mood_history(ent, db=mood_db)
-        if hist:
-            emotion = hist[0]["mood_label"]
     # ★ 暗注意力参与读心（2026-08-29）：潜台词是主人没说出口的真实状态
+    # ★2026-09-03 已落地根治(用户洞察: 思考=暗注意力): 废 _HIDDEN_RULES 规则模板 →
+    #   hidden 边唯一来源 = cog 认知重构真实思考(mood_graph.add_hidden_text, stress_engine ③b 归档)。
+    #   以下保留为历史诊断记录(净轮 61/92「焦虑」旧根因, 现模板源已除):
+    #     (a) 范畴错误: query_hidden 返回 _hidden_derive 的【雷姆自语模板】
+    #         ("日常的事,雷姆有点担心…") 恒含「担心」→ 关键词匹配恒命中「焦虑」;
+    #     (b) 结构性采样偏差: add_hidden_edge 只在情绪【非平静】时才写边,
+    #         实测 hidden 727 条 = 兴奋 562 / 低落 165, 【0% 平静】;
+    #         而 emotion 6512 条 = 平静 6399 (98.3%)。两图分布完全倒置。
+    #         本链是瀑布最后一环(84% 事件走到它), 却只能从"永不含平静"的分布里取值。
+    #   实测: 改用边的 mood_label 字段 + 强度×时间衰减聚合, 结果变成【兴奋 82/92】(更糟);
+    #         τ∈{7,14,30} × 阈值∈{0.4,0.8,1.2} 九种组合【全部 82/92 触发】——
+    #         因「日常」桶堆积 562 条兴奋边, 权重和恒超阈, 调参无效。
+    #   → 正解在【生成端】: _HIDDEN_RULES 门槛(0.10-0.25)过低导致 11.2% 事件都生成潜台词,
+    #     违背"高情绪事件才推导潜台词"的设计意图。属设计决策, 不擅自改。
     hidden_ctx = hidden_ctx or []
     if hidden_ctx and emotion == "平静":
         _h = " ".join(hidden_ctx)
@@ -195,7 +219,8 @@ def infer_owner_state_model(model, tok, sampler, event_text: str,
             from mood_graph import mood_label_of
             _s = _sentiment_of(event_text)
             if abs(_s) >= 0.3:
-                emotion = mood_label_of(_s, abs(_s) + 0.3)
+                # ★2026-09-03 修复: 去 +0.3 强度注水（同规则版，见 infer_owner_state）
+                emotion = mood_label_of(_s, abs(_s))
         except Exception:  # noqa: BLE001
             pass
     emotion = emotion or owner_mood
