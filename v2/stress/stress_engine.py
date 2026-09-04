@@ -856,10 +856,11 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
                                                sampler=sampler).strip().split("\n")[0][:120]
                     except Exception:  # noqa: BLE001
                         _r["think"] = ""
-                    # ★2026-09-04 think→ans 链接(用户: 解决内心独白与口语链接): fresh think
-                    #   注入口语编码输入——message 以刚生成的内心为条件(先想后说), 不再只是观测;
-                    #   克制由 EXPRESS_SYS(不得直说内心) + monitor 保证, 同 dialogue 链接改法。
-                    _internal["think"] = (_r.get("think") or "")[:140]
+                    # ★2026-09-04 脑科学回退(用户: think=元认知/ToM 发生地, 耦合要小心): think 原文
+                    #   不进 _internal——内语只观测(自由内心纯净, 防观测者效应); message 输入=
+                    #   preverbal message 状态(believed/confidence/hidden/situation/memory/mood/
+                    #   relation, 9/2 Levelt 契约) + suppress(conceptual loop) + monitor(inner loop)。
+                    #   think→ans 彩排式因果由 v2 单次生成(权重内)承载, 系统层不摊 think 文本。
                     _msgs = _ebm(_internal)
                     _p = tok.apply_chat_template(_msgs,
                                                  tokenize=False, add_generation_prompt=True, enable_thinking=False)
@@ -1024,11 +1025,11 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
                     tokenize=False, add_generation_prompt=True, enable_thinking=False)
                 _think = generate(model, tok, prompt=_tp, max_tokens=90, sampler=sampler).strip().split("\n")[0][:110]
                 try:
-                    # ★2026-09-04 链接完整化(dialogue ↔ proactive 输出链同构): internal 不只有
-                    #   think——补齐 _proactive_state 同款状态底色(hidden 潜台词 + relation 亲密度),
-                    #   让她"带着底色回应"而不只是"看过内心再答"(缺底色=dialogue 仍是半裸答)。
+                    # ★2026-09-04 输出链同构(dialogue ↔ proactive): internal = preverbal message 状态
+                    #   (Levelt: 概念化层产出非语言意图)。★脑科学回退(9/4 12:20 用户): think 原文
+                    #   不进表达——内语=元认知/ToM 发生地, 只观测(Broca 重新编码非倒出思考);
+                    #   think 与 ans 的"彩排式因果"由权重层(v2 单次生成)承载, 系统层只喂状态。
                     _din = {"event": f"主人刚才对雷姆说：「{_t[:60]}」",
-                            "think": (_think or _t)[:140],
                             "relation": round(min(1.0, day / 40.0), 2)}
                     try:
                         import sqlite3 as _sqd
@@ -1039,7 +1040,7 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
                         _cd.close()
                         if _hd and _hd[0]:
                             _din["hidden"] = _hd[0].replace("hidden:", "")[:60]
-                    except Exception:  # noqa: BLE001 —— 潜台词取不到不阻塞(有 think+event 已可编码)
+                    except Exception:  # noqa: BLE001 —— 潜台词取不到不阻塞
                         pass
                     _dmsgs = _dmb(_din)
                     _p = tok.apply_chat_template(_dmsgs, tokenize=False,

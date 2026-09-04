@@ -59,14 +59,12 @@ def build_messages(internal: dict) -> list[dict]:
       event(事件)/believed(读心)/confidence(置信→试探度)/hidden(潜台词→暗示不说破)
       situation(主人近期→上下文)/memory(想起→唤起)/mood(心态→语气)
       relation(亲密度→距离)/owner_mood(主人当前→抑制)/intent(意图)
-    ★2026-09-04 新增 think 槽(think→ans 链接): think(她此刻的内心独白)作为内心状态喂入,
-      由 EXPRESS_SYS 做受约束重编码——心里想的可作参考但不许直说(规则2/3), 克制由编码+monitor
-      保证。think 与 hidden 同构(都只进生成上下文, 绝不原样输出)。"""
+    ★2026-09-04 铁律(脑科学 Levelt 回查 + 9/2 定稿): 本模块输入 = **preverbal message 状态**
+      (概念化层产出, 非语言形式), 绝不接收内心独白原文(think/cog)——内语是元认知/ToM 发生地,
+      应保持自由只观测; Broca 重新编码而非倒出思考(本文件 docstring 原文)。think 文本不进表达。"""
     parts = []
     if internal.get("event"):
         parts.append(f"今天发生的事：{internal['event'][:80]}")
-    if internal.get("think"):
-        parts.append(f"雷姆心里想的：{str(internal['think'])[:140]}")
     if internal.get("believed"):
         parts.append(f"雷姆对主人心情的判断：{internal['believed']}")
     _cf = internal.get("confidence")
