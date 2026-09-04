@@ -856,6 +856,10 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
                                                sampler=sampler).strip().split("\n")[0][:120]
                     except Exception:  # noqa: BLE001
                         _r["think"] = ""
+                    # ★2026-09-04 think→ans 链接(用户: 解决内心独白与口语链接): fresh think
+                    #   注入口语编码输入——message 以刚生成的内心为条件(先想后说), 不再只是观测;
+                    #   克制由 EXPRESS_SYS(不得直说内心) + monitor 保证, 同 dialogue 链接改法。
+                    _internal["think"] = (_r.get("think") or "")[:140]
                     _msgs = _ebm(_internal)
                     _p = tok.apply_chat_template(_msgs,
                                                  tokenize=False, add_generation_prompt=True, enable_thinking=False)
@@ -985,6 +989,7 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
     #   合规: dialogue 仅评估输入(与 ToMi 30 题同性质), 不进训练, 不违反成长语料铁律。
     try:
         from engine.expression import monitor as _dmon
+        from engine.expression import build_messages as _dmb   # ★09-04 think→ans 链接
         _dinputs = None
         try:
             _dfp = os.path.join(STRESS_ROOT, "inputs-v2", f"day-{day:03d}.json")
@@ -1008,15 +1013,26 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
                 #   主人对她说一句 → 她先有内部反应(觉察/读心/潜台词/联想 = 暗注意力, 自由内心
                 #   不经 monitor——内心可叙述) → 再口语回应(经 monitor)。双层: think=她听到时
                 #   心里想什么, ans=她说出口的。与 proactive 的 think/message 双轨同构。
+                # ★2026-09-04 think→ans 链接(用户: 解决内心独白与口语链接——新底模只是补充,
+                #   系统层先接): 旧实现=两次平行采样(think 只观测, ans prompt 无 think)。现改为
+                #   think 作为内心状态喂 expression.build_messages(EXPRESS_SYS 口语重编码: 心里
+                #   想的不得直说, 翻译成当面口语; 与 proactive 输出链同构) → ans 以 think 为条件
+                #   = 先想后说。克制/泄漏由 EXPRESS_SYS 负向约束 + monitor 双兜底。
                 _tp = tok.apply_chat_template(
                     [{"role": "system", "content": sys_p},
                      {"role": "user", "content": f"主人刚才对雷姆说：「{_t[:60]}」\n雷姆听到这句话,心里会想什么?(内心独白,不用说出来)"}],
                     tokenize=False, add_generation_prompt=True, enable_thinking=False)
                 _think = generate(model, tok, prompt=_tp, max_tokens=90, sampler=sampler).strip().split("\n")[0][:110]
-                _p = tok.apply_chat_template(
-                    [{"role": "system", "content": sys_p},
-                     {"role": "user", "content": f"主人刚才对雷姆说：「{_t[:60]}」"}],
-                    tokenize=False, add_generation_prompt=True, enable_thinking=False)
+                try:
+                    _dmsgs = _dmb({"event": f"主人刚才对雷姆说：「{_t[:60]}」",
+                                   "think": (_think or _t)[:140]})
+                    _p = tok.apply_chat_template(_dmsgs, tokenize=False,
+                                                 add_generation_prompt=True, enable_thinking=False)
+                except Exception:  # noqa: BLE001 —— 输出层异常: 退回旧裸 prompt(think 不链接, 保底)
+                    _p = tok.apply_chat_template(
+                        [{"role": "system", "content": sys_p},
+                         {"role": "user", "content": f"主人刚才对雷姆说：「{_t[:60]}」"}],
+                        tokenize=False, add_generation_prompt=True, enable_thinking=False)
                 _raw = generate(model, tok, prompt=_p, max_tokens=60, sampler=sampler).strip().split("\n")[0][:80]
                 _a = _dmon(_raw)   # 输出前监控: 叙述体泄漏/张冠李戴/小说旁白 → 丢弃
                 if _a:
