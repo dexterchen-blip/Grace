@@ -987,10 +987,12 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
     #   ①主人输入改读 day-N.json["dialogue_inputs"](build_dialogue_inputs.py 用 :8100 按当天情境
     #      + 我的口语风格生成的"我会对雷姆说的话")——不再从书库文本挑(邮件/系统/群聊碎片非对话)。
     #   ②user 尾句删"雷姆会怎么回应？"(27B 会复读它, AA 轮 day11 实锤)——只给情境, 让模板续写。
-    #   合规: dialogue 仅评估输入(与 ToMi 30 题同性质), 不进训练, 不违反成长语料铁律。
+    #   合规(★2026-09-04 脑科学 register 裁决修订): think(现场内心探针)=观测仪器, 仅评估不进训练;
+    #   ans(过 monitor 的保真口语)= speak register 真实输出, 进训练(见 train_27b dialogue 回流段,
+    #   "治本: 对话形态训进权重")——split 前训练只有 think/内心 register, speak 无每日语料, 必须补。
     try:
         from engine.expression import monitor as _dmon
-        from engine.expression import build_messages as _dmb   # ★09-04 think→ans 链接
+        from engine.expression import build_messages as _dmb   # ★09-04 dialogue 输出链同构
         _dinputs = None
         try:
             _dfp = os.path.join(STRESS_ROOT, "inputs-v2", f"day-{day:03d}.json")
