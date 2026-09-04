@@ -525,6 +525,26 @@ def train_27b(samples: list[str], adapter_name: str,
                     _n += 1
             if _n:
                 print(f"    [proactive] 并入主动消息样本 {_n} 条（她会主动关心主人）")
+        # ★2026-09-04 dialogue 回流(治本: 对话形态训进权重, 裸 prompt 实验结论):
+        #   她面对主人直接说话的回应(dialogue-live, ans 已过 monitor 保真口语)进训练——
+        #   权重学到"对话中的雷姆"(口语短句/不念旁白), 终态 persona prompt 可只剩情境。
+        #   合规: ans=真实 AI 输出(成长语料铁律允许), 仅过 monitor 的保真口语回流, think 不进。
+        _dl = os.path.join(STRESS_ROOT, "dialogue-live.jsonl")
+        if os.path.isfile(_dl):
+            _nd = 0
+            for _l in open(_dl, encoding="utf-8"):
+                try:
+                    _r = json.loads(_l)
+                except json.JSONDecodeError:
+                    continue
+                if _r.get("ans") and _r.get("owner"):
+                    f.write(json.dumps({"messages": [
+                        {"role": "system", "content": sys_p},
+                        {"role": "user", "content": f"主人对雷姆说：{_r['owner'][:80]}"},
+                        {"role": "assistant", "content": _r["ans"][:120]}]}, ensure_ascii=False) + "\n")
+                    _nd += 1
+            if _nd:
+                print(f"    [dialogue] 并入对话口语样本 {_nd} 条（她面对主人说话的形态）")
         # ★2026-09-02 定稿: gist 样本(V2 真实书库)——「（日期 的一天）原文 → gist」ChatML
         #   她学"真实经历 → 她的记忆"的映射(替代模板回声; 27B 离线预生成, 生成效应)
         #   ★P1b 重激活(2026-09-02, 脑科学: 海马 replay + SWS 重激活 + Ebbinghaus 间隔重复):
@@ -1002,6 +1022,14 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
                 if _a:
                     out.append({"q": f"[dialogue] {_t[:50]}", "think": _think, "ans": _a,
                                 "path": "dialogue", "group": "dialogue", "owner": _t[:60]})
+                    # ★2026-09-04 回流落盘: 过 monitor 的保真口语 → dialogue-live.jsonl(进训练)
+                    try:
+                        with open(os.path.join(STRESS_ROOT, "dialogue-live.jsonl"), "a",
+                                  encoding="utf-8") as _dlf:
+                            _dlf.write(json.dumps({"day": day, "owner": _t[:80], "ans": _a[:120],
+                                                   "think": _think[:110]}, ensure_ascii=False) + "\n")
+                    except Exception:  # noqa: BLE001
+                        pass
             except Exception:  # noqa: BLE001
                 continue
     except Exception:  # noqa: BLE001
