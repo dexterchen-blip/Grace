@@ -1024,8 +1024,24 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
                     tokenize=False, add_generation_prompt=True, enable_thinking=False)
                 _think = generate(model, tok, prompt=_tp, max_tokens=90, sampler=sampler).strip().split("\n")[0][:110]
                 try:
-                    _dmsgs = _dmb({"event": f"主人刚才对雷姆说：「{_t[:60]}」",
-                                   "think": (_think or _t)[:140]})
+                    # ★2026-09-04 链接完整化(dialogue ↔ proactive 输出链同构): internal 不只有
+                    #   think——补齐 _proactive_state 同款状态底色(hidden 潜台词 + relation 亲密度),
+                    #   让她"带着底色回应"而不只是"看过内心再答"(缺底色=dialogue 仍是半裸答)。
+                    _din = {"event": f"主人刚才对雷姆说：「{_t[:60]}」",
+                            "think": (_think or _t)[:140],
+                            "relation": round(min(1.0, day / 40.0), 2)}
+                    try:
+                        import sqlite3 as _sqd
+                        _cd = _sqd.connect(os.path.join(config.SB, "memory", "L2_semantic", "l2.db"))
+                        _hd = _cd.execute(
+                            "SELECT source FROM mood_graph WHERE edge_type='hidden' AND source!='' "
+                            "ORDER BY ts DESC LIMIT 1").fetchone()
+                        _cd.close()
+                        if _hd and _hd[0]:
+                            _din["hidden"] = _hd[0].replace("hidden:", "")[:60]
+                    except Exception:  # noqa: BLE001 —— 潜台词取不到不阻塞(有 think+event 已可编码)
+                        pass
+                    _dmsgs = _dmb(_din)
                     _p = tok.apply_chat_template(_dmsgs, tokenize=False,
                                                  add_generation_prompt=True, enable_thinking=False)
                 except Exception:  # noqa: BLE001 —— 输出层异常: 退回旧裸 prompt(think 不链接, 保底)
