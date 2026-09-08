@@ -12,6 +12,8 @@ cd "$(dirname "$0")/../.." || exit 1
 ROOT="$(pwd)"
 DAY_LIMIT=33
 [ "$1" = "--days" ] && DAY_LIMIT="$2"
+DENSITY="${DENSITY:-1}"   # ★2026-09-09 fix: L37 '"$DENSITY"' 由本 shell 展开, 必须先在此定默认值
+                          #   (原默认只在 L25 env 前缀里 → 未显式传 DENSITY 时 --density 展开为空, 引擎 arg error rc=2)
 
 # 安全等待: 若有压测在跑则退出（不叠轮）
 if pgrep -f "stress_engine.py" >/dev/null 2>&1; then

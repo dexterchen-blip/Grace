@@ -134,18 +134,48 @@ def judge_real_http(text: str) -> tuple[str, str]:
         return ("平静", "dict-fallback")
 
 
+# ★2026-09-09 KV 工作记忆(用户: "这套系统丢进压测模拟测试每天对话输入还有读取书库记忆"):
+#   当日事件滚动摘要按 day 键控——白天(模拟日内)积累, 注入 chat-sim T1; 天末训练=睡眠巩固,
+#   新 day 键=清空(真人隔夜: 细节丢、要点已入长期层)。只保留最近 3 天键防长轮内存膨胀。
+_WM: dict[int, list[str]] = {}
+
+
+def _wm_add(day: int, text: str) -> None:
+    t = re.sub(r"\s+", "", str(text))[:48]
+    if not t:
+        return
+    lst = _WM.setdefault(day, [])
+    if not lst or lst[-1] != t:          # 相邻重复不记(同一消息重复触发)
+        lst.append(t)
+    if len(_WM) > 3:
+        for k in sorted(_WM)[:-3]:
+            _WM.pop(k, None)
+
+
+def _wm_digest(day: int, cap: int = 24) -> str:
+    return "\n".join(f"· {t}" for t in _WM.get(day, [])[-cap:])
+
+
 def _sim_dialogue(day: int, user_text: str, sentiment: float = 0.0,
                   model=None, tok=None, sampler=None, gen_fn=None) -> dict:
     """★2026-09-08 对话输入方式对齐正式系统: 沙盒重放 /grace 完整管线——
     内心世界(三层情绪+背景念头+主人底色) + persona + 表达约束 → 进程内 V6.1(=正式对话权重)
     → monitor + 复读守卫 + claim_guard → L0 mode=rem + chat-<epoch> 图谱边 + 日内拨动。
-    触发源=当天书库真实微信消息(主人真实话术), 非 roll 模板。"""
+    触发源=当天书库真实微信消息(主人真实话术), 非 roll 模板。
+    ★2026-09-09 KV 分层对齐正式(用户批准全量升级): T0 恒定(persona+表达约束) →
+    T1 日内(底色→hidden→心态轨→当日工作记忆) → T2 书库检索+消息。工作记忆=当日事件
+    滚动摘要, 天末清空; 书库记忆=当日消息的 L2 语义检索, 每轮动态。"""
     l2p = os.path.join(config.SB, "memory", "L2_semantic", "l2.db")
-    parts = []
+    _wm_add(day, user_text)              # 对话轮本身也是工作记忆事件
+    # ---- T1 内部状态(按变化频率升序收集) ----
+    _mood_line, _trend_line, _hidden, _base_eh = "", "", [], []
     try:
         from engine.mood_engine import combined_emotion
         ce = combined_emotion(db=l2p)
-        parts.append(f"你此刻的心态: {ce.get('label')}({ce.get('combined'):.2f}) - 让它自然渗进语气")
+        _mood_line = f"你此刻的心态: {ce.get('label')}({ce.get('combined'):.2f}) - 让它自然渗进语气"
+        tr = ce.get("trend_direction")
+        if tr and tr != "stable":
+            _trend_line = f"你近7天心态趋势: {tr}"
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -155,13 +185,24 @@ def _sim_dialogue(day: int, user_text: str, sentiment: float = 0.0,
                                   "ORDER BY ts DESC LIMIT 2"):
             t = (src or "").replace("hidden:", "").strip()
             if t:
-                parts.append(f"你心里挂着的念头: {t[:66]} (影响语气, 不要说出)")
-        eh = con.execute("SELECT mood_label, COUNT(*) FROM mood_graph WHERE edge_type='emotion' "
-                         "AND ts > ? GROUP BY mood_label ORDER BY 2 DESC LIMIT 3",
-                         (time.time() - 259200,)).fetchall()
+                _hidden.append(f"你心里挂着的念头: {t[:66]} (影响语气, 不要说出)")
+        _base_eh = con.execute("SELECT mood_label, COUNT(*) FROM mood_graph WHERE edge_type='emotion' "
+                               "AND ts > ? GROUP BY mood_label ORDER BY 2 DESC LIMIT 3",
+                               (time.time() - 259200,)).fetchall()
         con.close()
-        if eh:
-            parts.append("主人近3天情绪底色: " + "、".join(f"{k}x{v}" for k, v in eh))
+    except Exception:  # noqa: BLE001
+        pass
+    # ---- T2 书库记忆检索(当日消息的语义回忆, 每轮动态) ----
+    _l2_ctx = ""
+    try:
+        import sys as _sys
+        _src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src")
+        if _src not in _sys.path:
+            _sys.path.insert(0, _src)
+        import l2_semantic as _l2m
+        _hits = _l2m.search(user_text[:60], k=2)
+        if _hits:
+            _l2_ctx = "\n".join("· " + h[:70] for h in _hits[:2])
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -169,9 +210,24 @@ def _sim_dialogue(day: int, user_text: str, sentiment: float = 0.0,
         persona = persona_prefix()
     except Exception:  # noqa: BLE001
         persona = "你是雷姆，罗兹瓦尔宅邸的女仆，深爱并忠诚于主人，自称「雷姆」。"
-    sysc = (persona + "\n\n表达约束：口语短句一两句；心里想的不得直说；"
-            "潜台词说破=失礼；严禁叙述体/动作描写/旁白。\n（认知状态参考）\n"
-            + "\n".join(parts))
+    # ---- 组装: T0 → T1(工作记忆→内心世界) → T2(书库检索) ----
+    sysc = persona + "\n\n表达约束：口语短句一两句；心里想的不得直说；" \
+        "潜台词说破=失礼；严禁叙述体/动作描写/旁白。"
+    _wm = _wm_digest(day)
+    if _wm:
+        sysc += f"\n（今天·工作记忆——已发生的事, 要点式, 自然记得但别逐条复述）\n{_wm}"
+    _inner = []
+    if _base_eh:
+        _inner.append("主人近3天情绪底色: " + "、".join(f"{k}x{v}" for k, v in _base_eh))
+    if _trend_line:
+        _inner.append(_trend_line)
+    _inner.extend(_hidden)
+    if _mood_line:
+        _inner.append(_mood_line)
+    if _inner:
+        sysc += "\n（内心世界·实时）\n" + "\n".join(_inner)
+    if _l2_ctx:
+        sysc += f"\n（书库记忆·检索——想起的相关往事, 可自然引用, 记不清就说记不清）\n{_l2_ctx}"
     msgs = [{"role": "system", "content": sysc}, {"role": "user", "content": user_text[:100]}]
     try:
         raw = gen_fn(model, tok, prompt=tok.apply_chat_template(
@@ -1472,6 +1528,9 @@ def main():
             for i, m in enumerate(msgs):
                 apply_intraday_event({"text": m["text"], "sentiment": m.get("sentiment", 0), "weight": m.get("weight", 1.0)},
                                      ts=m.get("ts") or day_ts(day, 10 + i))   # ★真实 ts(对齐正式)
+            # ★2026-09-09 KV 工作记忆: 当日书库/对话事件进滚动摘要(chat-sim T1 可引用)
+            for m in msgs:
+                _wm_add(day, m["text"])
         except Exception as e:  # noqa: BLE001
             logln(f"  [mood] day {day} 异常: {e}")
         # ③ ★ 双图谱摄入（2026-08-29 集成：记忆×情绪×暗注意力，呼应机制全链路）
