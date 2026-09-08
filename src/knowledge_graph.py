@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""L2 知识图谱层（2026-08-21 第一步：实体-关系三元组抽取 + 落库，检索跳转第二步再做）。
+"""L2 知识图谱层（2026-08-21 第一步：实体-关系三元组抽取+落库；2026-09-04 第二步：检索跳转已接检索）。
 
 设计（用户 2026-08-21 拍板「按设计来」，分两步）：
-  第一步（本模块）：夜班 35B 巩固后顺带把增量 L2 文档抽成三元组
+  第一步（本模块）：夜班 35B/27B 巩固后顺带把增量 L2 文档抽成三元组
     (subject, relation, object)，存 l2.db 图谱三表；图谱随每晚夜班自动积累。
-  第二步（后续开发）：检索跳转 —— 查询命中 doc 后沿图谱 1-2 跳召回关联记忆，
-    接进 _l2_search_context（本模块预留 graph_hops() 接口，图谱积累后再启用）。
+  第二步（2026-09-04 完成）：检索跳转 —— l2_semantic search --graph 调本模块 graph_hops()，
+    查询命中 doc 后沿图谱 1-2 跳召回关联记忆，拼进 m6_dashboard _l2_search_context 注入段。
+    跳转做了枢纽实体剪枝（HUB_DOC_MAX）+ 按共享实体数排序，防个人枢纽大扇出噪声。
 
 存储（并入 l2.db，与向量/BM25 同库）：
   entities(name TEXT PRIMARY KEY)                  -- 实体（35B 归一化到规范名）
@@ -214,44 +215,58 @@ def extract_pending(port: int, model_id: str, max_tokens: int = 3000) -> int:
     return total
 
 
+HUB_DOC_MAX = 40  # 实体连接文档数 > 此值 = 个人枢纽（Dexter/UCSB/邮箱/常用词），跳转剪枝（2026-09-04）
+
+
 def graph_hops(doc_ids: list[str], depth: int = 1, limit: int = 10) -> list[str]:
-    """【第二步：检索跳转预留接口】给命中文档，沿图谱跳 depth 跳，返回关联 doc_id。
-    图谱积累（第一步跑一段时间）后接进 _l2_search_context 启用。"""
+    """【第二步：检索跳转接口】给命中文档，沿图谱跳 depth 跳，返回关联 doc_id（相关度降序）。
+    2026-09-04 第二步实测后增强（防噪声，纯查询逻辑，不依赖重抽）：
+      ① 枢纽实体剪枝 —— 连接 >HUB_DOC_MAX 篇文档的实体（Dexter/UCSB/邮箱等个人枢纽）
+        不参与关系扩展，杜绝「命中一个 DS-160 → 沿 Dexter 扇出到游戏闲聊」类大扇出；
+      ② 按共享实体数排序 —— 候选文档按与跳转实体的共享数降序取 top，替代任意 LIMIT；
+      ③ 返回保序（list 而非 set 迭代），供调用方取前 N 即最相关。"""
     if depth < 1 or not doc_ids:
         return []
     db = get_db()
+    hub = {h[0] for h in db.execute(
+        "SELECT entity FROM doc_entities GROUP BY entity HAVING COUNT(*) > ?",
+        (HUB_DOC_MAX,)).fetchall()}
     cur = set(doc_ids)
-    seen = set(doc_ids)
+    seen: set[str] = set(doc_ids)
+    out: list[str] = []
     for _ in range(depth):
-        ents = db.execute(
+        rows = db.execute(
             "SELECT DISTINCT entity FROM doc_entities WHERE doc_id IN (%s)"
             % ",".join("?" * len(cur)), tuple(cur)).fetchall()
-        if not ents:
+        enames = [e[0] for e in rows if e[0] not in hub]
+        if not enames:
             break
-        enames = [e[0] for e in ents]
         rel_rows = db.execute(
             "SELECT s, o FROM relations WHERE s IN (%s) OR o IN (%s)"
             % (",".join("?" * len(enames)), ",".join("?" * len(enames))),
             tuple(enames) + tuple(enames)).fetchall()
         hops: set[str] = set()
         for s, o in rel_rows:
-            for e in enames:
-                if s == e:
-                    hops.add(o)
-                if o == e:
-                    hops.add(s)
+            if s in enames:
+                hops.add(o)
+            if o in enames:
+                hops.add(s)
+        hops -= hub
         if not hops:
             break
-        next_docs = db.execute(
-            "SELECT DISTINCT doc_id FROM doc_entities WHERE entity IN (%s) AND doc_id NOT IN (%s)"
+        new_rows = db.execute(
+            "SELECT doc_id, COUNT(*) shared FROM doc_entities "
+            "WHERE entity IN (%s) AND doc_id NOT IN (%s) "
+            "GROUP BY doc_id ORDER BY shared DESC, doc_id LIMIT ?"
             % (",".join("?" * len(hops)), ",".join("?" * len(seen))),
-            tuple(hops) + tuple(seen)).fetchall()
-        new_docs = [d[0] for d in next_docs][:limit]
+            tuple(hops) + tuple(seen) + (limit,)).fetchall()
+        new_docs = [d[0] for d in new_rows]
         if not new_docs:
             break
         cur = set(new_docs)
         seen.update(new_docs)
-    return [d for d in seen if d not in doc_ids]
+        out.extend(new_docs)
+    return out
 
 
 def stats() -> None:

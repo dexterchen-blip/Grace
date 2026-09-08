@@ -10,7 +10,7 @@
   - 顶部 Tab 条注入到两个页面（dashboard 和 dsh web 都注入），切换无感
   - Cmd+Shift+J 快速收起；底部工具条：刷新 / 收起
 
-依赖：~/.workbuddy/binaries/python/envs/sidebar（pywebview）。
+依赖：/Users/cz/.workbuddy/binaries/python/envs/sidebar（pywebview）。
 常驻：launchd plist = dsh/com.local-ai-agent.sidebar.plist。
 """
 from __future__ import annotations

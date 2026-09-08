@@ -16,7 +16,7 @@ mode 标签：
   persona 不进 L2 语义索引（l2_semantic 摄入侧按 mode 过滤，见 §5）。
 
 幂等水位：memory/L1_working/chat_capture_state.json，per-session 记录已摄入的最大 seq。
-解压：session.jsonl.zstd 走 zstd CLI（anaconda3 自带，~/anaconda3/bin/zstd）。
+解压：session.jsonl.zstd 走 zstd CLI（anaconda3 自带，/Users/cz/anaconda3/bin/zstd）。
 
 用法：
   python3 chat_capture.py run      # 增量摄入（m4_ingest chat 步调它）
@@ -35,7 +35,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DSH_SESSIONS = os.path.expanduser("~/.dsh/sessions")
 STATE_PATH = os.path.join(REPO, "memory", "L1_working", "chat_capture_state.json")
 L0_ROOT = os.path.join(REPO, "memory", "L0_raw")
-ZSTD = "~/anaconda3/bin/zstd"
+ZSTD = "/Users/cz/anaconda3/bin/zstd"
 
 PERSONA_KEYWORDS = ("megumin", "惠惠", "persona")
 # 运行时注入/系统条目特征：非真人消息，跳过

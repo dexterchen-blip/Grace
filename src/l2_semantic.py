@@ -43,6 +43,11 @@ DIM = 1024
 CHUNK = 1200          # 语料切块阈值（字）
 CHUNK_TRIGGER = 1500  # 超过才切
 
+# 2026-09-04 boost 相关性门槛：cos(fact, query) < BOOST_COS_MIN → 不 boost；
+# ≥ MIN 后线性升至 (MIN+RANGE) 满权重。标定：相关 0.61-0.73，不相关 0.27-0.44。
+BOOST_COS_MIN = 0.45
+BOOST_COS_RANGE = 0.25
+
 
 class Embedder:
     """bge-m3 GGUF 经 llama.cpp（Metal）。输出 L2 归一化向量（余弦≈单调于 L2 距离）。"""
@@ -180,9 +185,43 @@ def build(only_source: str | None = None, batch: int = 16) -> None:
     print(f"[build] 完成，索引总量 {db.execute('SELECT COUNT(*) FROM docs').fetchone()[0]} 块")
 
 
+_URGENT = re.compile(r"immediately|urgent|asap|right away|尽快|紧急", re.IGNORECASE)
+_ISO_DATE = re.compile(r"20\d{2}[-/]\d{1,2}[-/]\d{1,2}")
+
+
+def _parse_deadline(text: str) -> float | None:
+    """提取文本中第一个未来日期的时间戳（ISO 格式），无则 None。"""
+    for m in _ISO_DATE.finditer(text):
+        try:
+            t = time.mktime(time.strptime(m.group(0).replace("/", "-"), "%Y-%m-%d"))
+            return t
+        except ValueError:
+            continue
+    return None
+
+
+def _time_sort_facts(facts: list[str]) -> list[str]:
+    """时间排序（2026-08-26 沙盒验证）：紧急 > 未来日期(近→远) > 无日期 > 已过期。
+    不删除事实，只调 boost 优先级（即将发生/紧急的优先进加权查询）。"""
+    now = time.time()
+    ranked = []
+    for f in facts:
+        dl = _parse_deadline(f)
+        if _URGENT.search(f):
+            rank, key = 0, 0.0
+        elif dl and dl >= now:
+            rank, key = 1, dl - now
+        elif dl:
+            rank, key = 3, now - dl
+        else:
+            rank, key = 2, 0.0
+        ranked.append((rank, key, f))
+    return [f for _, _, f in sorted(ranked, key=lambda x: (x[0], x[1]))]
+
+
 def _load_important_facts(limit: int = 5) -> list[str]:
     """L3 core.md 中 [x/high]/[x/medium] 事实（夜班 35B 判定重要）→ 常驻加权查询。
-    实现「AI 重要的事自动加权」：这些事实在每次检索时作为额外查询，命中文档权重 ×1.5。"""
+    2026-08-26：加时间排序（紧急/即将发生优先，已过期垫底）。"""
     l3 = os.path.join(REPO, "memory", "L3_core", "core.md")
     if not os.path.exists(l3):
         return []
@@ -193,9 +232,7 @@ def _load_important_facts(limit: int = 5) -> list[str]:
             text = line.split("] ", 1)[-1].strip()
             if len(text) >= 8:
                 facts.append(text[:200])
-        if len(facts) >= limit:
-            break
-    return facts
+    return _time_sort_facts(facts)[:limit]
 
 
 def decay(stale_days: int = 90, revive_days: int = 30) -> None:
@@ -214,33 +251,61 @@ def decay(stale_days: int = 90, revive_days: int = 30) -> None:
     print(f"[decay] L2 遗忘扫描完成：陈旧 {n_stale} 条（{stale_days} 天未命中降权，{revive_days} 天内命中复活）")
 
 
-def search(query: str, k: int = 8, rrf_k: int = 60) -> list[dict]:
+def search(query: str, k: int = 8, rrf_k: int = 60, pool: int = 0) -> list[dict]:
     """混合检索：向量 ANN + BM25 + RRF 融合。
     2026-08-21 增强：① 时间权重（1/(1+age/30)，新记忆占优）② L3 high/medium 事实常驻
-    加权查询（AI 判定重要 ×1.5）③ 陈旧降权（stale ×0.3）④ 命中即强化（hits/last_hit）。"""
+    加权查询（AI 判定重要 ×0.8）③ 陈旧降权（stale ×0.3）④ 命中即强化（hits/last_hit）。
+    2026-08-26 增强（沙盒验证）：⑤ 候选池 pool（默认 max(k*3,60)，混合大库需放大）
+    ⑥ recency：24h 内新内容 ×2.0 ⑦ imminence：文本含 24h 内未来日期 ×1.5。"""
     emb = Embedder()
     db = get_db()
     now = time.time()
-    qv = json.dumps(emb.embed([query])[0])
+    if not pool:
+        pool = max(k * 3, 60)
+    q_vec = emb.embed([query])[0]                     # 2026-09-04: 留原始向量算 boost 相关度
+    qv = json.dumps(q_vec)
     vec_rows = db.execute(
         "SELECT doc_id, distance FROM vec_docs WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
-        (qv, k * 3)).fetchall()
+        (qv, pool)).fetchall()
     # 主查询 FTS5 转义（2026-08-21 修）：查询含 -/数字/空格等特殊字符会被 FTS5 当语法
     # （如「DS-160」→ column 160）→ 整个检索异常。拆词 + 双引号，保证不炸。
-    fts_query = " OR ".join(f'"{t}"' for t in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9\-]{2,}", query)) or f'"{query}"'
+    # 2026-08-26 修：英文停用词（how/is/my/to 等高频词）不进 OR，否则 FTS 命中大量
+    # 无关会话、RRF 被 FTS 主导、向量腿被挤掉（LongMemEval 全英文暴露）。
+    _EN_STOP = {"a", "an", "the", "of", "to", "in", "on", "for", "with", "and", "or",
+                "is", "are", "was", "were", "be", "been", "i", "you", "your", "my",
+                "me", "it", "this", "that", "what", "how", "can", "do", "did", "not",
+                "would", "should", "could", "have", "has", "had", "from", "at", "by",
+                "about", "up", "out", "into", "over", "after"}
+    fts_tokens = [t for t in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9\-]{2,}", query)
+                  if t.lower() not in _EN_STOP]
+    fts_query = " OR ".join(f'"{t}"' for t in fts_tokens) or f'"{query}"'
     fts_rows = db.execute(
         "SELECT doc_id, bm25(fts_docs) AS score FROM fts_docs WHERE fts_docs MATCH ? ORDER BY score LIMIT ?",
-        (fts_query, k * 3)).fetchall()
+        (fts_query, pool)).fetchall()
     scores: dict[str, float] = {}
     for rank, (did, _d) in enumerate(vec_rows):
         scores[did] = scores.get(did, 0) + 1.0 / (rrf_k + rank + 1)
+    # FTS 腿权重 ×0.5（2026-08-26 修）：短英文问题 OR 匹配的 BM25 噪声会主导 RRF、
+    # 挤掉向量腿正确命中（LongMemEval 全英文暴露）。向量腿为主、FTS 为补充。
     for rank, (did, _s) in enumerate(fts_rows):
-        scores[did] = scores.get(did, 0) + 1.0 / (rrf_k + rank + 1)
-    # 重要加权：L3 high/medium 事实作为常驻查询（AI 重要的事自动加权）
+        scores[did] = scores.get(did, 0) + 0.5 / (rrf_k + rank + 1)
+    # 重要加权：L3 high/medium 事实作为常驻查询（时间排序后，权重 ×0.8 防霸榜）。
+    # 2026-09-04 修（护照/签证主题查询 top-k 被挤光的根因）：boost 原来无条件给
+    # 每个 fact 的近邻文档加票、与当前查询无关 → 5 个 fact 的票(~0.8·1.5/61≈0.02/篇)
+    # 把纯查询命中（vec rank1≈1/61，还要乘 time_w≈0.6）整体挤出 top-k。现在 boost
+    # 只对与查询语义相关（cos≥0.45）的 fact 启用，幅度按 (cos-0.45)/0.25 线性升到满权重：
+    #   - 问护照/签证（与全部 fact cos≤0.44）→ boost 全关，主题文档正常回来
+    #   - 问 ELPE/疫苗（cos 0.61-0.73）→ 保留同义改写召回（LongMemEval 场景不回退）
     boost = _load_important_facts()
     if boost:
         for fact in boost:
-            bv = json.dumps(emb.embed([fact])[0])
+            bv_list = emb.embed([fact])[0]
+            # bge-m3 向量已 L2 归一，点积即余弦
+            cos_qf = sum(a * b for a, b in zip(q_vec, bv_list))
+            factor = min(1.0, max(0.0, (cos_qf - BOOST_COS_MIN) / BOOST_COS_RANGE))
+            if factor <= 0:
+                continue
+            bv = json.dumps(bv_list)
             bvec = db.execute(
                 "SELECT doc_id FROM vec_docs WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
                 (bv, k)).fetchall()
@@ -250,10 +315,10 @@ def search(query: str, k: int = 8, rrf_k: int = 60) -> list[dict]:
                 "SELECT doc_id FROM fts_docs WHERE fts_docs MATCH ? ORDER BY bm25(fts_docs) LIMIT ?",
                 (" OR ".join(f'"{t}"' for t in tokens) if tokens else fact, k)).fetchall()
             for rank, (did,) in enumerate(bvec):
-                scores[did] = scores.get(did, 0) + 1.5 / (rrf_k + rank + 1)
+                scores[did] = scores.get(did, 0) + 0.8 * 1.5 * factor / (rrf_k + rank + 1)
             for rank, (did,) in enumerate(bfts):
-                scores[did] = scores.get(did, 0) + 1.5 / (rrf_k + rank + 1)
-    # 计算最终分：RRF × 时间权重 × 陈旧降权，排序取 top-k
+                scores[did] = scores.get(did, 0) + 0.8 * 1.5 * factor / (rrf_k + rank + 1)
+    # 计算最终分：RRF × 时间权重 × 陈旧降权 × recency(24h) × imminence(24h 内到期)，排序取 top-k
     ranked = []
     for did, sc in scores.items():
         r = db.execute("SELECT source, ref, text, ts, stale FROM docs WHERE doc_id=?", (did,)).fetchone()
@@ -262,13 +327,16 @@ def search(query: str, k: int = 8, rrf_k: int = 60) -> list[dict]:
         age_days = (now - (r[3] or now)) / 86400.0
         time_w = 1.0 / (1.0 + age_days / 30.0)     # 时间权重：30 天半衰（新记忆占优）
         stale_w = 0.3 if r[4] else 1.0              # 陈旧降权（L2 遗忘）
-        ranked.append((did, sc * time_w * stale_w, r))
+        recency_w = 2.0 if (r[3] and (now - r[3]) < 86400) else 1.0   # 24h 新内容
+        dl = _parse_deadline(r[2] or "")
+        imminence_w = 1.5 if (dl and 0 <= dl - now <= 86400) else 1.0  # 24h 内到期
+        ranked.append((did, sc * time_w * stale_w * recency_w * imminence_w, r))
     ranked.sort(key=lambda x: -x[1])
     out = []
     for did, final, r in ranked[:k]:
         db.execute("UPDATE docs SET hits=hits+1, last_hit=? WHERE doc_id=?", (now, did))  # 强化
-        out.append({"rrf": round(final, 4), "source": r[0], "ref": r[1],
-                    "text": r[2][:300], "ts": r[3]})
+        out.append({"doc_id": did, "rrf": round(final, 4), "source": r[0], "ref": r[1],
+                    "text": r[2][:300], "ts": r[3]})  # doc_id: 2026-09-04 图谱跳转用
     db.commit()
     return out
 
@@ -287,15 +355,44 @@ if __name__ == "__main__":
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("build"); b.add_argument("--source", default=None)
     s = sub.add_parser("search"); s.add_argument("query"); s.add_argument("-k", type=int, default=8)
+    s.add_argument("--json", action="store_true",
+                   help="输出 JSON {hits,related}（hits 含 doc_id，供 dashboard 图谱跳转）")
+    s.add_argument("--graph", type=int, default=0,
+                   help=">0 时沿知识图谱跳 N 跳召回关联文档（lazy import knowledge_graph，失败只丢 related）")
     d = sub.add_parser("decay"); d.add_argument("--stale-days", type=int, default=90)
     sub.add_parser("stats")
     args = ap.parse_args()
     if args.cmd == "build":
         build(args.source)
     elif args.cmd == "search":
-        for hit in search(args.query, args.k):
-            print(f"[{hit['rrf']}] {hit['source']} | {hit['text'][:150].replace(chr(10), ' / ')}")
-            print("---")
+        hits = search(args.query, args.k)
+        # 图谱跳转（2026-09-04 第二步）：命中 doc → graph_hops → 关联文档文本。
+        # best-effort：任何异常只丢 related，检索本身照常；知识图谱只读 l2.db。
+        related: list[dict] = []
+        if args.graph > 0 and hits:
+            try:
+                if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+                    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                from knowledge_graph import graph_hops  # 懒加载：默认路径零依赖
+                rel_ids = graph_hops([h["doc_id"] for h in hits], depth=args.graph, limit=8)
+                if rel_ids:
+                    db = get_db()
+                    for did in rel_ids:
+                        r = db.execute(
+                            "SELECT source, ref, text FROM docs WHERE doc_id=?", (did,)).fetchone()
+                        if r:
+                            related.append({"doc_id": did, "source": r[0], "ref": r[1],
+                                            "text": (r[2] or "")[:200]})
+            except Exception:
+                related = []
+        if args.json:
+            print(json.dumps({"hits": hits, "related": related}, ensure_ascii=False))
+        else:
+            for hit in hits:
+                print(f"[{hit['rrf']}] {hit['source']} | {hit['text'][:150].replace(chr(10), ' / ')}")
+                print("---")
+            for d in related:
+                print(f"[图谱关联] {d['source']} | {d['text'][:150].replace(chr(10), ' / ')}")
     elif args.cmd == "decay":
         decay(args.stale_days)
     else:

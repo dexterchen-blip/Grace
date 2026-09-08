@@ -37,9 +37,10 @@ import scenarios  # noqa: E402
 STRESS_ROOT = os.path.join(config.EXPERIMENTS, "run", "stress")
 START_DAY = datetime(2026, 8, 28)   # 入学后（虚拟日历）
 
-# ★ 2026-08-28：人格底模升级为 fused-rem-v5（rem_v5 融合，完整雷姆味）
-#   压力测试 = 在已有人格上继续每日微调，验证「记忆在完整雷姆上持续塑造」。
-MAIN_MODEL = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/models/fused-rem-v5"
+# ★ 2026-09-04：底模升级 fused-rem-v5 → fused-rem-v61（rem-v6-lora 项目 V6.1：
+#   Re0 think+台词 联合 LoRA(rank64/5000 iters/16层, base=fused-rem-v5) → 融合)
+#   看点：叙述体/被吩咐先想后说 是否被权重内化；与 v5 同族(14GB 4bit)可直替。
+MAIN_MODEL = "/Users/cz/WorkBuddy/watch/rem-v6-lora/models/fused-rem-v61"
 
 
 def day_ts(day: int, h: int = 10) -> float:
@@ -71,6 +72,149 @@ def _rem_replies() -> list[str]:
                     except Exception:  # noqa: BLE001
                         continue
     return _REM_LINES
+
+
+_HTTP8100 = "http://127.0.0.1:8100/v1/chat/completions"
+
+
+def _http_chat(messages: list[dict], max_tokens: int = 120, temperature: float = 0.7,
+               timeout: int = 90) -> str:
+    """★2026-09-08 输入方式对齐正式系统: 8100 全程在线当独立认知器官(正式架构)——
+    ToM 判断/judge 重标/对话生成全走 HTTP 独立 27B, 压测进程内模型(V6.1)只管对话人格与训练。"""
+    import urllib.request as _ur
+    body = json.dumps({"model": "mlx-community/Qwen3.8-27B-4bit", "messages": messages,
+                       "max_tokens": max_tokens, "temperature": temperature}).encode()
+    req = _ur.Request(_HTTP8100, data=body, headers={"Content-Type": "application/json"})
+    with _ur.urlopen(req, timeout=timeout) as resp:
+        out = json.loads(resp.read().decode("utf-8", "replace"))
+    return (out.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+
+
+def tom_judge_http(text: str, owner_mood: str, hidden_ctx, self_mood: str, relation: float) -> dict:
+    """★正式系统 grace_daily.tom_judge 同构(8100 HTTP 四问+自我模拟基线+潜台词)。"""
+    from engine.theory_of_mind import _normalize_emotion
+    hid = ""
+    if hidden_ctx:
+        hid = (f"\n（雷姆自己此刻没说出口的潜台词：{'｜'.join(hidden_ctx[:2])[:120]}"
+               "\n——注意：这是你自己的内心活动，不要把你对主人的关心当成主人本人的焦虑。）")
+    prompt = (
+        f"（情境）你看到这样一条信息：{text[:80]}\n"
+        f"（参考：主人今天的情绪被记为{owner_mood}——但请以信息本身为准）\n"
+        f"（你自己此刻的状态：{self_mood}；与主人的亲密度：{relation:.1f}/1.0。"
+        "先从自己的经历和感受出发模拟主人，但最终判断以主人本人信号为准。）" + hid + "\n"
+        "雷姆，请判断四件事：\n1. 主人此刻真实的心情？（六选一：平静/轻微兴奋/兴奋/低落/焦虑/专注）\n"
+        "2. 主人此刻需要什么？（一句话）\n"
+        "3. 值得主动去找主人说吗？（值得/不值得）\n"
+        "4. 如果值得，一句台词（不描写动作）\n格式：心情：…；需要：…；值得：…；台词：…")
+    raw = _http_chat([{"role": "user", "content": prompt}], max_tokens=180)
+
+    def _pick(k, d):
+        mm = re.search(k + r"[：:]\s*([^；;\n]{1,40})", raw)
+        return mm.group(1).strip() if mm else d
+    emotion = _normalize_emotion(_pick("心情", ""))
+    need = _pick("需要", "顺其自然")[:30]
+    worth = _pick("值得", "值得")
+    return {"emotion": emotion, "need": need, "event_type": "model",
+            "interruptible": not any(w in worth for w in ("不值得", "不必", "不打扰")),
+            "advice": need, "message": _pick("台词", "")[:80],
+            "confidence": None, "_by": "model"}
+
+
+def judge_real_http(text: str) -> tuple[str, str]:
+    """★Phase 0 judge 重标平移: 独立 27B 六选一判 real(词典尺过敏感 81% 已实锤)。
+    返回 (label, real_by)。8100 不可达 → 词典回退(real_by=dict)。"""
+    try:
+        from engine.theory_of_mind import _normalize_emotion
+        raw = _http_chat([{"role": "user", "content":
+                           "判断这条消息反映的主人此刻情绪，六选一（平静/轻微兴奋/兴奋/低落/焦虑/专注），只回一个词：\n"
+                           + text[:80]}], max_tokens=12, temperature=0.1, timeout=30)
+        lab = _normalize_emotion(raw.strip())
+        return (lab, "judge") if lab else ("平静", "dict-fallback")
+    except Exception:  # noqa: BLE001
+        return ("平静", "dict-fallback")
+
+
+def _sim_dialogue(day: int, user_text: str, sentiment: float = 0.0,
+                  model=None, tok=None, sampler=None, gen_fn=None) -> dict:
+    """★2026-09-08 对话输入方式对齐正式系统: 沙盒重放 /grace 完整管线——
+    内心世界(三层情绪+背景念头+主人底色) + persona + 表达约束 → 进程内 V6.1(=正式对话权重)
+    → monitor + 复读守卫 + claim_guard → L0 mode=rem + chat-<epoch> 图谱边 + 日内拨动。
+    触发源=当天书库真实微信消息(主人真实话术), 非 roll 模板。"""
+    l2p = os.path.join(config.SB, "memory", "L2_semantic", "l2.db")
+    parts = []
+    try:
+        from engine.mood_engine import combined_emotion
+        ce = combined_emotion(db=l2p)
+        parts.append(f"你此刻的心态: {ce.get('label')}({ce.get('combined'):.2f}) - 让它自然渗进语气")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import sqlite3 as _sq
+        con = _sq.connect(l2p)
+        for (src,) in con.execute("SELECT source FROM mood_graph WHERE edge_type='hidden' "
+                                  "ORDER BY ts DESC LIMIT 2"):
+            t = (src or "").replace("hidden:", "").strip()
+            if t:
+                parts.append(f"你心里挂着的念头: {t[:66]} (影响语气, 不要说出)")
+        eh = con.execute("SELECT mood_label, COUNT(*) FROM mood_graph WHERE edge_type='emotion' "
+                         "AND ts > ? GROUP BY mood_label ORDER BY 2 DESC LIMIT 3",
+                         (time.time() - 259200,)).fetchall()
+        con.close()
+        if eh:
+            parts.append("主人近3天情绪底色: " + "、".join(f"{k}x{v}" for k, v in eh))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from engine.persona_injector import persona_prefix
+        persona = persona_prefix()
+    except Exception:  # noqa: BLE001
+        persona = "你是雷姆，罗兹瓦尔宅邸的女仆，深爱并忠诚于主人，自称「雷姆」。"
+    sysc = (persona + "\n\n表达约束：口语短句一两句；心里想的不得直说；"
+            "潜台词说破=失礼；严禁叙述体/动作描写/旁白。\n（认知状态参考）\n"
+            + "\n".join(parts))
+    msgs = [{"role": "system", "content": sysc}, {"role": "user", "content": user_text[:100]}]
+    try:
+        raw = gen_fn(model, tok, prompt=tok.apply_chat_template(
+            msgs, tokenize=False, add_generation_prompt=True, enable_thinking=False),
+            max_tokens=160, sampler=sampler).strip().split("\n")[0][:200]
+    except Exception as e:  # noqa: BLE001
+        return {"status": f"gen-err: {str(e)[:50]}"}
+    from engine.expression import monitor as _mon
+    reply = _mon(raw)
+    if reply and re.search(r"(.{1,3})\1{5,}", reply.replace("。", "").replace("，", "")):
+        reply = ""
+    # claim_guard: 记忆声明对 L3 矩阵核验
+    try:
+        if reply and re.search(r"记得|你说过|答应过|上次你", reply):
+            from engine.autobiography import hallucination_guard
+            if not hallucination_guard("日常", reply,
+                                       db=os.path.join(config.SB, "memory", "L3_core", "autobiography.db")):
+                reply = ""
+    except Exception:  # noqa: BLE001
+        pass
+    if not reply:
+        return {"status": "filtered"}
+    # 落库: L0 mode=rem + 实时图谱边 + 日内拨动(全对齐正式)
+    ts_now = day_ts(day, 20)
+    try:
+        l0p = os.path.join(config.SB, "memory", "L0_raw", "chat.jsonl")
+        os.makedirs(os.path.dirname(l0p), exist_ok=True)
+        json.dump({"mode": "rem", "source": "chat-sim", "ts": time.time(),
+                   "payload": {"session": f"stress-d{day}",
+                               "messages": [{"role": "user", "text": user_text[:100], "ts": ts_now - 5},
+                                            {"role": "assistant", "text": reply, "ts": ts_now}]}},
+                  open(l0p, "a", encoding="utf-8"), ensure_ascii=False)
+        open(l0p, "a", encoding="utf-8").write("\n")
+        from engine.mood_graph import dual_graph_ingest, add_hidden_text
+        from engine.mood_engine import apply_intraday_event
+        dual_graph_ingest(user_text, event_id=f"chat-d{day}-{int(ts_now)}",
+                          sentiment=sentiment, ts=ts_now, db=l2p)
+        apply_intraday_event({"text": user_text[:60], "sentiment": sentiment,
+                              "weight": 0.6}, db=l2p, ts=ts_now)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"status": "ok", "user": user_text[:40], "reply": reply[:60]}
+
 
 
 def l0_append(texts: list[dict], day: int) -> None:
@@ -453,7 +597,16 @@ def train_27b(samples: list[str], adapter_name: str,
                     if _ent:
                         import sqlite3 as _sq
                         _cn = _sq.connect(os.path.join(config.SB, "memory", "L2_semantic", "l2.db"))
-                        _novel = _cn.execute("SELECT COUNT(*) FROM mood_graph WHERE entity=?", (_ent,)).fetchone()[0] == 0
+                        # ★2026-09-05 O2 修复(9/5 实码: novelty 旁路被 entity 坍缩瘫痪——89% 消息
+                        #   实体="日常"→几乎永不首现→P1a 恒失效): 日常桶消息改用【文本指纹首现】
+                        #   (该文本未在图谱 trigger 出现过=新奇), 非日常实体维持实体首现判定。
+                        if _ent == "日常":
+                            # 首现 = 图谱中不存在任何 trigger 包含该文本指纹的边
+                            _novel = _cn.execute(
+                                "SELECT COUNT(*) FROM mood_graph WHERE edge_type='emotion' AND instr(trigger, ?) > 0",
+                                (s[:40],)).fetchone()[0] == 0
+                        else:
+                            _novel = _cn.execute("SELECT COUNT(*) FROM mood_graph WHERE entity=?", (_ent,)).fetchone()[0] == 0
                         _cn.close()
                 except Exception:  # noqa: BLE001
                     _novel = False
@@ -530,7 +683,13 @@ def train_27b(samples: list[str], adapter_name: str,
         #   权重学到"对话中的雷姆"(口语短句/不念旁白), 终态 persona prompt 可只剩情境。
         #   合规: ans=真实 AI 输出(成长语料铁律允许), 仅过 monitor 的保真口语回流, think 不进。
         _dl = os.path.join(STRESS_ROOT, "dialogue-live.jsonl")
-        if os.path.isfile(_dl):
+        # ★2026-09-08 消融实验(用户: "只给她书库不给对话文件"): GRACE_NO_DIALOGUE=1 时
+        #   训练排除全部对话口语样本——隔离"对话数据"这一变量, 检验 ToM/元意识进步
+        #   究竟来自对话数据还是书库数据。chat-sim 回放照跑(作为测量仪器, 不作为训练源)。
+        _no_dial = os.environ.get("GRACE_NO_DIALOGUE") == "1"
+        if _no_dial:
+            print("    [dialogue] 消融模式: 对话口语样本全部排除(GRACE_NO_DIALOGUE=1)", flush=True)
+        elif os.path.isfile(_dl):
             _nd = 0
             for _l in open(_dl, encoding="utf-8"):
                 try:
@@ -1107,6 +1266,9 @@ def main():
     ap.add_argument("--reset-interval", type=int, default=40,
                     help="★神经新生重置周期(天,默认40=定量估算的最佳不睡天数;0=关闭)")
     ap.add_argument("--start", type=int, default=1)
+    ap.add_argument("--density", type=int, default=1,
+                    help="★2026-09-08 数据密度: K 个源天合并为 1 个模拟天——事件/判断/图谱/"
+                         "训练样本密度 ×K(压力测试旋钮), 模拟天数 = ceil(源天/K)")
     ap.add_argument("--inputs-dir", default=None,
                     help="★2026-09-02 书库切换: 指定 inputs 目录名(如 inputs-v2 真实L0书库); 默认 inputs/")
     ap.add_argument("--ingest-official", action="store_true",
@@ -1145,6 +1307,41 @@ def main():
     if not files:
         logln("❌ inputs/ 为空")
         return
+    # ★2026-09-08 数据密度(用户: "提高数据密度提升压力"): K 个源天合并为 1 个模拟天。
+    #   消息按真实 ts 排序(日内弧线保持真实), cog/gist 拼接, 每源天保留一次对话回放源。
+    #   判断/图谱边/训练样本密度 ×K——同样的"人生月份"压缩进更短的时间, 压力上升。
+    _K = max(1, int(getattr(args, "density", 1)))
+    if _K > 1:
+        _merged = []
+        _recs = []
+        for _fp in files:
+            try:
+                _r = json.load(open(_fp, encoding="utf-8"))
+                _r["_msgs"] = sorted(_r.get("messages", []), key=lambda m: m.get("ts", 0) or 0)
+                _recs.append(_r)
+            except (OSError, ValueError):
+                continue
+        for _ci in range(0, len(_recs), _K):
+            _grp = _recs[_ci:_ci + _K]
+            _msgs = []
+            for _si, _r in enumerate(_grp):
+                for _m in _r["_msgs"]:
+                    _m = dict(_m)
+                    _m["_sub"] = _si          # 源天标记(对话回放每源天一次)
+                    _msgs.append(_m)
+            _msgs.sort(key=lambda m: m.get("ts", 0) or 0)
+            _merged.append({"day": _ci // _K + 1, "date": f"density{_K}-chunk{_ci // _K + 1}",
+                            "messages": _msgs,
+                            "cog": sum((r.get("cog") or [] for r in _grp), []),
+                            "gist": sum((r.get("gist") or [] for r in _grp), []),
+                            "_sim_sources": [r["messages"][0]["text"] for r in _grp
+                                             if r.get("messages")]})
+        files = [None] * len(_merged)          # 占位: 循环改为读 _merged
+        _merged_mode = _merged
+        logln(f"  [density] ×{_K}: {len(_recs)} 源天 → {len(_merged)} 模拟天"
+              f"(约 {sum(len(r['messages']) for r in _merged) / max(1, len(_merged)):.0f} 消息/天)")
+    else:
+        _merged_mode = None
     logln(f"=== 回放模拟启动 {datetime.now().strftime('%H:%M:%S')} ｜ 输入 {len(files)} 天 ｜ 训练间隔 {args.train_every} ｜ 采样间隔 {args.sample_every} ===")
     logln(f"  [cfg] GRACE_EWC={os.environ.get('GRACE_EWC','1')}(未设/1=开) MODE={os.environ.get('GRACE_EWC_MODE','B')} "
           f"ALPHA={os.environ.get('GRACE_EWC_ALPHA','0.7')} DELTA={os.environ.get('GRACE_SLEEP_DELTA','0.03')}")
@@ -1197,12 +1394,58 @@ def main():
     def _snapshot_done(day: int) -> bool:
         return os.path.isfile(os.path.join(STRESS_ROOT, f"day-{day:03d}.json"))
 
-    for path in files:
-        with open(path, encoding="utf-8") as f:
-            rec = json.load(f)
+    # ★2026-09-05 (用户拍板: 压测无性能限制, 模型驱动 ToM=8/29 核心设计): 主循环全程持有
+    #   fused-rem-v61 模型, 每日 ToM 判断走 infer_owner_state_model(27B 四问 + hidden 潜台词
+    #   注入→模型自己判语义主体, 取代规则版链④关键词匹配的范畴错误——V6.1 定性 111/116 错)。
+    #   adapter 跟随 _latest_adapter(day) 隔天生效语义, 变化即 reload(~1.5min/次)。
+    #   内存核算: 主循环 15.5G + 断点采样函数内 load 15.5G = 31G(无训练同刻) / 训练 subprocess
+    #   20.7G + 主循环 15.5G = 36G —— 均 < 48G, 单模型铁律不破(8100 已停)。
+    from mlx_lm import load as _mlx_load
+    from mlx_lm.sample_utils import make_sampler as _make_sampler
+    mmodel = None
+    mtok = None
+    msampler = _make_sampler(temp=0.7)
+    _loaded_adapter = "__none__"
+
+    def _ensure_model(day_now: int):
+        nonlocal mmodel, mtok, _loaded_adapter
+        want = _latest_adapter(adapter_base, day_now) or "__base__"
+        if want == _loaded_adapter and mmodel is not None:
+            return
+        if mmodel is not None:
+            mmodel = None   # ★2026-09-05 赋值 None 而非 del——del 删 enclosing 绑定会让后续 nonlocal 访问炸 free variable
+            mtok = None
+        kw = {"adapter_path": os.path.join(config.ADAPTERS, want)} if want != "__base__" else {}
+        mmodel, mtok = _mlx_load(MAIN_MODEL, **kw)
+        _loaded_adapter = want
+        logln(f"  [ToM-model] 已加载 {'base' if want == '__base__' else want}（模型驱动 ToM）")
+
+    def _release_model(reason: str = ""):
+        """★2026-09-05 爆内存修复(20:48 整机爆内存重启教训): D4 引入'主循环常驻模型(15.5G)
+        + 训练 subprocess(load 15.5G+峰值 20.7G)'双驻留新形态——Metal 统一内存压满爆机。
+        训练前释放主循环模型; 训练出新 adapter 本就需 reload(次日 _ensure_model 检测变化自动),
+        reload 时机挪到训练后=净时间不变。单模型铁律精神: 任何时刻单份模型驻留。
+        ★21:02 实锤: del nonlocal 变量后, 其他函数的 nonlocal 访问报
+        'cannot access free variable' → 必须赋值 None, 不能 del。"""
+        nonlocal mmodel, mtok, _loaded_adapter
+        if mmodel is not None:
+            mmodel = None
+            mtok = None
+            import gc as _gcm
+            _gcm.collect()
+            _loaded_adapter = "__released__"
+            logln(f"  [ToM-model] 主循环模型已释放（{reason}）防训练双驻留爆内存")
+
+    for _mi, path in enumerate(files):
+        if _merged_mode is not None:
+            rec = _merged_mode[_mi]           # ★density 模式: 合并后的模拟天
+        else:
+            with open(path, encoding="utf-8") as f:
+                rec = json.load(f)
         day = rec["day"]
         if day <= resume:
             continue                          # 已摄入，跳过
+        _ensure_model(day)                    # ★2026-09-05 模型驱动 ToM: 当日生效 adapter 就位
         msgs = rec["messages"]
         # ① 当天对话 → L0
         l0_append(msgs, day)
@@ -1228,7 +1471,7 @@ def main():
             derive(evs, ts=day_ts(day, 21))
             for i, m in enumerate(msgs):
                 apply_intraday_event({"text": m["text"], "sentiment": m.get("sentiment", 0), "weight": m.get("weight", 1.0)},
-                                     ts=day_ts(day, 10 + i))
+                                     ts=m.get("ts") or day_ts(day, 10 + i))   # ★真实 ts(对齐正式)
         except Exception as e:  # noqa: BLE001
             logln(f"  [mood] day {day} 异常: {e}")
         # ③ ★ 双图谱摄入（2026-08-29 集成：记忆×情绪×暗注意力，呼应机制全链路）
@@ -1236,7 +1479,8 @@ def main():
             from engine.mood_graph import dual_graph_ingest
             for i, m in enumerate(msgs):
                 dual_graph_ingest(m["text"], event_id=f"ev-d{day}-{i}",
-                                  sentiment=m.get("sentiment"), ts=day_ts(day, 10 + i))
+                                  sentiment=m.get("sentiment"),
+                                  ts=m.get("ts") or day_ts(day, 10 + i))   # ★真实 ts
             # ★ 机制③ theta 时序窗口(Seidenbecher): 当日情绪峰值事件 → 标记峰值同步
             #   峰值事件的情绪边与记忆边耦合最强(提取时优先激活,模拟 theta 相位同步)
             _peak_i = max(range(len(msgs)), key=lambda i: abs(msgs[i].get("sentiment", 0)))
@@ -1269,24 +1513,46 @@ def main():
         # ④ ★ L3 自传体矩阵摄入（2026-08-29 集成）
         try:
             from engine.autobiography import add_event
-            from engine.mood_graph import entity_of
+            from engine.mood_graph import entity_of, mood_label_of as _l3mlo
             for i, m in enumerate(msgs):
                 if not _sel[i]:
                     continue   # ★P0 门控: 低显著琐碎消息不进 L3 自传体(自传 = 人生大事,非流水账)
-                add_event(m["text"], ts=day_ts(day, 10 + i), entity=entity_of(m["text"]),
-                          emotion="平静", relation="日常守护",
+                # ★2026-09-05 O14 修复(9/5 实码新挖): emotion 原硬编码"平静"→ 自传体情绪轴 100% 扁平
+                #   (归档库实测 448/448 全平静)。改用书库 sentiment 现算标签(数据就在字段里没被用)。
+                _s4 = float(m.get("sentiment", 0) or 0)
+                _rid = add_event(m["text"], ts=m.get("ts") or day_ts(day, 10 + i), entity=entity_of(m["text"]),
+                          emotion=_l3mlo(_s4, abs(_s4)), relation="日常守护",
                           # ★2026-09-02 修: 原 self_eval="这一天的事,雷姆记住了" 是硬编码模板
                           #   (L3 写入端 → extract_l3_samples 读回 → 训练集「要后天。这一天的事,雷姆记住了」真根)。
                           #   self_eval 留空(默认)由 27B/正式管线填真实自我评价, 禁止代码造模板。
                           confidence="medium", evidence=m["text"][:120],
+                          event_id=f"ev-d{day}-{i}",   # ★2026-09-05 O3 修复: 与双图谱同键缝合(L3↔图谱 event 团簇)
                           db=os.path.join(config.SB, "memory", "L3_core", "autobiography.db"))
+                # ★self_eval 填充(2026-09-08 平移正式版 grace_daily: 9/2 定案"由 27B 填真实
+                #   自我评价"兑现; 进程内 27B 轻调用, 神态守卫同 cog 守卫)——自传体评价轴首活
+                try:
+                    from mlx_lm import generate as _gen2
+                    _se = _gen2(mmodel, mtok, prompt=mtok.apply_chat_template(
+                        [{"role": "user", "content":
+                          f"你是雷姆。今天发生了这件事：{m['text'][:70]}\n"
+                          "用第一人称写一句你对此的自我评价（你学到的/你在意的，≤30 字，"
+                          "禁神态描写，不要口号腔）。只输出这一句。"}],
+                        tokenize=False, add_generation_prompt=True, enable_thinking=False),
+                        max_tokens=60, sampler=msampler).strip().split("\n")[0][:60]
+                    if _se and not re.search(r"眉头|眼神|表情|强撑|看着你", _se):
+                        import sqlite3 as _sq4
+                        _c4 = _sq4.connect(os.path.join(config.SB, "memory", "L3_core", "autobiography.db"))
+                        _c4.execute("UPDATE autobiography SET self_eval=? WHERE id=?", (_se, _rid))
+                        _c4.commit(); _c4.close()
+                except Exception as _see:
+                    logln(f"  [self_eval] day {day} 异常: {str(_see)[:70]}")
         except Exception as e:  # noqa: BLE001
             logln(f"  [L3] day {day} 异常: {e}")
         # ⑤ ★ ToM + 注意力 + 自激发（每日主动决策,2026-08-29 集成）
         try:
             from engine.attention import generate_attention
             from engine.self_activation import decide
-            from engine.theory_of_mind import infer_owner_state
+            from engine.theory_of_mind import infer_owner_state, infer_owner_state_model
             owner_mood = "平静"
             try:
                 from mood_engine import _conn as _mc
@@ -1336,9 +1602,28 @@ def main():
                     _gc = _tom_from_graph(m["text"],
                                           os.path.join(config.SB, "memory", "L2_semantic", "l2.db"),
                                           owner_mood=owner_mood)
-                    tom = infer_owner_state(m["text"], owner_mood,
-                                            mood_db=os.path.join(config.SB, "memory", "L2_semantic", "l2.db"),
-                                            hidden_ctx=_gc.get("hidden_ctx") or None)
+                    # ★2026-09-05 模型驱动 ToM(用户拍板: 压测无性能限制): 27B 四问判断, hidden 潜台词
+                    #   注入 prompt 由模型自己判语义主体(取代链④关键词匹配的范畴错误); 规则版仅异常兜底。
+                    # ★2026-09-05 从自身出发(用户: 人判 ToM 也从自身出发): 她"整个 Grace 系统"的状态
+                    #   供给模型——心态轨(mood_engine combined=她的心态) + 亲密度(day/40) + 图谱史
+                    #   (owner_mood) + 记忆 + 潜台词。心智化以自我为模拟基线, 判断以主人信号收敛。
+                    try:
+                        from engine.mood_engine import combined_emotion as _cmb
+                        _self_mood = (_cmb() or {}).get("label") or "平静"
+                    except Exception:  # noqa: BLE001
+                        _self_mood = "平静"
+                    try:
+                        # ★2026-09-08 输入对齐: ToM 走 8100 独立 27B(正式架构 tom_judge 同构),
+                        #   不再进程内自判——独立 judge 是评估隔离的前提(同源=自我复制)
+                        tom = tom_judge_http(m["text"], owner_mood,
+                                             hidden_ctx=_gc.get("hidden_ctx") or None,
+                                             self_mood=_self_mood,
+                                             relation=round(min(1.0, day / 40.0), 2))
+                    except Exception as _tme:
+                        logln(f"  [ToM-http] day{day} 退回规则版: {str(_tme)[:60]}")
+                        tom = infer_owner_state(m["text"], owner_mood,
+                                                mood_db=os.path.join(config.SB, "memory", "L2_semantic", "l2.db"),
+                                                hidden_ctx=_gc.get("hidden_ctx") or None)
                 except Exception:  # noqa: BLE001
                     tom = infer_owner_state(m["text"], owner_mood)
                 # ★ 2026-08-30 用户: 人脑级反馈回路 v2(预测误差/再巩固/置信累积,零句式)
@@ -1366,7 +1651,9 @@ def main():
                     if _s_real is None:
                         _s_real = _sentiment_of(m["text"])
                     # ★2026-09-03 修复: 去 +0.3 强度注水（与 theory_of_mind 推断链同步）
-                    _real = mood_label_of(_s_real, abs(_s_real)) if abs(_s_real) >= 0.3 else "平静"
+                    # ★2026-09-08 对齐: real 走 8100 独立 judge 六选一(正式 Phase 0 同构),
+                    #   词典降为回退(real_by 归因)——独立尺是评估隔离的另一半
+                    _real, _real_by = judge_real_http(m["text"])
                     _believed = tom.get("emotion", "平静")
                     _neg = ("低落", "焦虑", "烦躁", "难过", "生气")
                     _pos = ("开心", "兴奋", "轻微兴奋", "快乐", "愉悦")
@@ -1392,6 +1679,8 @@ def main():
                             _f.write(json.dumps({"day": day, "believed": _believed, "real": _real,
                                                  "correct": _bel_cat == _real_cat,
                                                  "bel_cat": _bel_cat, "real_cat": _real_cat,  # ★③评估分层: 三格(pos/neu/neg)
+                                                 "judged_by": tom.get("_by", "rule"),          # ★2026-09-05 模型驱动 ToM 归因标记
+                                                 "real_by": _real_by,                         # ★2026-09-08: judge/dict 归因
                                                  "soft": (not _sel[i] and i in _soft),        # ★②中性觉察标记
                                                  "pe": round(_pe, 2), "w": _w}, ensure_ascii=False) + "\n")
                     except Exception:  # noqa: BLE001
@@ -1447,6 +1736,12 @@ def main():
                 if _reason and _reason not in _cog_seen:
                     _cog_seen.add(_reason)
                     cognition.append(_reason[:50])
+                # ★2026-09-08 对齐 proactive_watch: 夜间静默(23-8)+频率约束(≤2/天)
+                _hm = datetime.fromtimestamp(m.get("ts") or day_ts(day, 12)).hour
+                if r["activate"] and (23 <= _hm or _hm < 8):
+                    r["activate"] = False
+                if r["activate"] and sum(1 for x in proactive if x["day"] == day) >= 2:
+                    r["activate"] = False
                 if r["activate"]:
                     _key = m["text"].strip()[:50]
                     if _key not in _proactive_seen:
@@ -1517,8 +1812,29 @@ def main():
                         logln(f"  ↪ DMN 自发: 雷姆想起(重构回忆) → 主动(day {day})")
                 except Exception as _de:  # noqa: BLE001
                     pass
+        # ★2026-09-08 对话输入方式对齐: 每天一次 /grace 管线回放——主人真实话术(书库
+        #   门控消息)走正式对话管线(内心世界+persona+守卫+L0 mode=rem+chat-图谱边)
+        try:
+            _sim_inputs = rec.get("_sim_sources") or []
+            if not _sim_inputs:
+                _s0 = next((mm["text"] for i, mm in enumerate(msgs) if _sel[i]), None)
+                _sim_inputs = [_s0] if _s0 else []
+            for _si_text in _sim_inputs:
+                _sent = next((float(mm.get("sentiment", 0) or 0) for mm in msgs
+                              if mm.get("text") == _si_text), 0.0)
+                from mlx_lm import generate as _gen
+                _simr = _sim_dialogue(day, _si_text, _sent,
+                                      model=mmodel, tok=mtok, sampler=msampler,
+                                      gen_fn=_gen)
+                if _simr.get("status") == "ok":
+                    logln(f"  [chat-sim] d{day}: {_simr['user'][:22]} → {_simr['reply'][:34]}")
+                else:
+                    logln(f"  [chat-sim] d{day}: {_simr.get('status')}")
+        except Exception as _se:
+            logln(f"  [chat-sim] day {day} 异常: {str(_se)[:60]}")
         # ③ 每 train_every 天训练（续跑：已训 adapter 跳过）
         if day % args.train_every == 0 and not _adapter_done(day):
+            _release_model(f"day{day} 训练 subprocess 启动前")   # ★2026-09-05 防双驻留爆内存
             samples = extract_mood_samples(max(1, day - args.train_every + 1), day)
             # ★2026-09-02 审计修复(P0): extract_mood_samples 已固定返回 [](规则加工层摘除)——
             #   恒训。训练数据由 train_27b 内部组装(L3/图谱纯事件真实痕迹 + gist/cog 27B重构

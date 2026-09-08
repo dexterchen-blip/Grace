@@ -1,6 +1,6 @@
 # Grace V2 —— 三轨融合框架（外挂轨 × 权重轨 × 心态轨）
 
-> 设计底稿：`GRACE_WORK_DIR/Grace_v2_融合设计.md`（§15 类人双系统记忆已落地）
+> 设计底稿：`/Users/cz/WorkBuddy/watch/Grace_v2_融合设计.md`（§15 类人双系统记忆已落地）
 > 铁律：**Grace V2 只允许在本沙盒内开发与实验**（ai-sandbox 完全隔离），正式系统零接触。
 > 进度（2026-08-27）：M0✅ M1✅(rem_v2 雷姆 LoRA) M2✅ M3✅(日内+三层融合) M4✅ M5✅ §15✅ M6 收尾中
 

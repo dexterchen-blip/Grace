@@ -6,7 +6,7 @@
 ## 总原则（排序依据）
 
 1. **依赖驱动**：心态轨/自发依赖权重轨跑通；一致性加固依赖前两者在线。
-2. **风险递减**：先复用已验证管线（惠惠），再谈自动化；先规则引擎，再上 35B。
+2. **风险递减**：先复用已验证管线（惠惠），再谈自动化；规则引擎（V2.1 单模型 27B，不预留 35B）。
 3. **资源约束**：48GB 单驻留铁律。**27B 训练必须与白天 day-model 错峰**（停 8100 → 训练 → 恢复），惠惠 v6 已验证此流程。
 
 ---
@@ -51,7 +51,7 @@
 **M2 动作**：
 1. ✅ **源信息按天排序（2026-08-27 已实现）**：`candidate_extract.py` 按本地日期分组（epoch/ts → Asia/Shanghai），`--days` 看按天统计、`--date YYYY-MM-DD` 只提炼那一天、默认提炼最新一天；候选 id 带日期 `lora-YYYYMMDD-<seq>`；多源支持 `--l0 <path>` / `AIAGENT_PROD_L0`（正式 L0 只读引用）；文本提取按 source 适配（exchange→payload.text / wechat、chat→payload.messages[].text）
 2. ✅ **风格/事实分类器升级**：词表扩充（金额/学期节点 + 雷姆口癖词：巴鲁斯/昴君/鬼族/呜呣…），冒烟通过（"学费 5000 美金"→fact，"巴鲁斯,蕾姆…"→style）
-3. **35B 夜班错峰集成**（代码骨架已就绪：night_engine_v2 --real + 前置 8100 检查；35B 真跑待夜班）
+3. ~~35B 夜班错峰集成~~（2026-08-29 废弃：V2.1 单模型 27B，不预留 35B 接入）
 4. ✅ **隔天生效 + 24h 反悔窗口**：`v2/engine/adapter_manage.py`（promote/rollback/list，active.json 记录生效版本）；训练产物改 `rem_v1_YYYYMMDD` 命名
 5. ✅ **7 天滑动窗口 + 周 merge 脚本**：`v2/engine/lora_lifecycle.py`（prune/status/weekly_merge；真权重 merge 为开放问题 2）
 4. 隔天生效 + 24h 反悔窗口（适配器轮换：昨天 adapter 保留可回退）
@@ -63,7 +63,7 @@
 
 ## M3 · 心态轨真实化（B1，与 M4 并行）
 
-1. ✅ `mood_engine` 规则版 + **35B 推演骨架**（`derive_with_35b`，回退规则引擎；35B 真跑待夜班）
+1. ✅ `mood_engine` 规则版（V2.1 单模型 27B，35B 推演骨架已移除）
 2. ✅ **心态注入器** `persona_injector.py`：mood_states → 显式文案前缀 + 雷姆人设段 → build_v2_system；铁律=只调语气强度不动价值观
 2b. ✅ **日内变化机制**（M3 增强）：mood_intraday 表 + `apply_intraday_event`（事件即时拨动，impact 0.4/大事 0.6）+ `current_intraday`（指数衰减 exp(-Δt/τ)，τ=2h 回归当日 base）+ `intraday_timeline`；注入器优先读日内（「现在你心情很好（刚才：…）」），跨天自动回退日级
 2c. ✅ **三层情绪融合引擎**（LoRA 人格底色 × 长期趋势 × 短期日内）：`combined_emotion` = 慢变量 anchor(0.6×7天趋势均值 + 0.4×人格底色 mood_baseline) + 快变量（有日内事件 combined=0.3×anchor+0.7×日内；无日内=0.5×anchor+0.5×日级）；`long_term_trend` 跨窗口对比（当前7天 vs 上一7天 → 回升/下行/平稳）；`derive`/`long_term_trend` 支持 ts/now 注入（时间线正确性）。性能实测 **0.19 ms/次**（SQLite 本地，×1000 基准）

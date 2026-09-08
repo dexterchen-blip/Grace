@@ -1,0 +1,20 @@
+# 雷姆 LoRA 训练配置 —— 参考惠惠 megumin_v6（adapter_config.json）
+# 用法: ./run.sh .venv/bin/python3 -m mlx_lm.lora -c v2/tools/train_rem.yaml
+model: mlx-community/Qwen3.8-27B-4bit
+train: true
+data: experiments/lora/datasets/rem
+adapter_path: experiments/lora/adapters/rem_v2
+batch_size: 1
+iters: 300
+learning_rate: 1e-5
+num_layers: 16
+lora_parameters:
+  rank: 8
+  dropout: 0.0
+  scale: 20.0
+max_seq_length: 2048
+steps_per_report: 20
+steps_per_eval: 200
+save_every: 100
+seed: 42
+grad_checkpoint: false

@@ -63,7 +63,7 @@ MOOD = {
 PERSONA = {
     "name": "rem",
     "display": "雷姆（Re:Zero 罗兹瓦尔宅邸女仆）",
-    "mood_baseline": 0.5,              # 人格情绪底色（LoRA 驱动）：雷姆外冷内热、中性偏内敛
+    "mood_baseline": 0.56,             # 人格情绪底色（LoRA 驱动）：雷姆温暖服务底色（★2026-09-03 X轮校准 0.5→0.56：原作正向25%频带 → 0.55-0.58）
     "anchor_file": os.path.join(os.path.dirname(os.path.abspath(__file__)), "persona", "rem.md"),
     "dataset_dir": os.path.join(DATASETS, "rem"),
     "adapter_dir": os.path.join(ADAPTERS, "rem_v1"),

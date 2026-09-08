@@ -50,8 +50,11 @@ class L0Writer:
                mode: str = "normal", sensitive: bool = False,
                meta: Optional[dict] = None) -> str:
         """追加一条原始记录，返回记录 id。永远追加，永不删改。"""
-        if mode not in ("normal", "persona"):
-            raise ValueError(f"mode must be normal|persona, got {mode!r}")
+        # ★2026-09-07 新增 mode="rem"：Grace 心智对话（集成方案 D-5 选项 1）——
+        #   与 normal 同走主树（进事实记忆/语义索引，成为成长语料），JSONL 里带 mode=rem
+        #   标签供下游区分"她与主人的真实对话"；persona 仍隔离子树不动。
+        if mode not in ("normal", "persona", "rem"):
+            raise ValueError(f"mode must be normal|persona|rem, got {mode!r}")
         rec = self._record(source, mode, payload, sensitive, meta)
         # persona 隔离到子树，永不进事实记忆的语义索引
         target_dir = self.persona_dir if mode == "persona" else self.l0_root

@@ -128,7 +128,7 @@
 - 修复：UPDATE 增加 `event_id = <被反馈事件>` 精确限定。
 
 **P1-5 哨兵三组件硬编码写正式系统目录 + 发布版字符串字面量 bug**
-- 真机版 `sentinel.py`/`timing_decision.py`/`wake_handler.py`：`SIGNAL_FILE`/`PLAN_FILE`/`DAYTIME` 硬编码为 `/Users/cz/WorkBuddy/skills find and make/local-ai-agent/exchange/.daytime/...`（含空格 + 绝对用户目录；沙盒组件直接**写**正式系统 L-1，触碰「沙盒零写正式系统」铁律边界；换机/换目录即断）。
+- 真机版 `sentinel.py`/`timing_decision.py`/`wake_handler.py`：`SIGNAL_FILE`/`PLAN_FILE`/`DAYTIME` 硬编码为 `~/WorkBuddy/skills find and make/local-ai-agent/exchange/.daytime/...`（含空格 + 绝对用户目录；沙盒组件直接**写**正式系统 L-1，触碰「沙盒零写正式系统」铁律边界；换机/换目录即断）。
 - 发布版（Grace-repo）更严重：三文件写成 `SIGNAL_FILE = "os.path.join(config.EXCHANGE, '.daytime')/sentinel-signal.json"` **字符串字面量**（未执行 os.path.join）→ 若部署发布版，哨兵链路必然落点错乱。
 - 修复：路径改由 config/env 注入；发布版同步修掉字符串 bug。
 

@@ -37,7 +37,7 @@ import sys
 import time
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, time as dtime
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 L0_ROOT = os.path.join(REPO, "memory", "L0_raw")
@@ -67,7 +67,7 @@ if SANDBOX:
 PY = sys.executable
 L2_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src", "l2_semantic.py")
 # 夜班模型用 llama-cpp venv（有 sqlite_vec + llama_cpp）；摄入用 3.13 管理器
-L2_VENV = "~/.workbuddy/binaries/python/envs/llama-cpp/bin/python"
+L2_VENV = "/Users/cz/.workbuddy/binaries/python/envs/llama-cpp/bin/python"
 
 TZ_CN = timezone(timedelta(hours=8))
 SEGMENT_TIMEOUT = 600  # 10 min per segment
@@ -134,6 +134,11 @@ def _prefetch_gate() -> list[str]:
     不依赖 WorkBuddy 自动化）。失败不阻塞管线——记入报告让用户知道。
     返回触发日志行。
     """
+    # 夜班禁用 Michelle 升级（2026-08-30 用户：「确保不会卡死夜班」）：
+    # 升级是白天交互特性；夜班失败一律如实记录，绝不触发 Michelle 子进程
+    # （否则失败叠加可能拖长 seg1 数百秒，甚至撞上 seg3 挂起 27B 的窗口）。
+    # router.maybe_escalate 检查此开关后零子进程秒拒。
+    os.environ["MICHELLE_ESCALATE"] = "0"
     log = []
     sys.path.insert(0, os.path.join(REPO, "src"))
     from scrape import source_status, scrape_email, scrape_outlook
@@ -289,7 +294,7 @@ def segment1_ingest() -> dict:
     # → 文本提取 → L0(doc:file)。doc-parse venv 子进程；沙盒跟随。
     try:
         DOC_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "doc_ingest.py")
-        DOC_VENV = "~/.workbuddy/binaries/python/envs/doc-parse/bin/python"
+        DOC_VENV = "/Users/cz/.workbuddy/binaries/python/envs/doc-parse/bin/python"
         if not os.path.exists(DOC_VENV):
             print("[seg1] doc-parse venv 未装，跳过文档识别")
         else:
@@ -406,7 +411,7 @@ def _stop_night_model(proc: subprocess.Popen | None, use_day: bool = False) -> N
 
 # ---- 夜班单模型错峰（2026-08-22 修：48GB 装不下 27B+35B 双驻留 43.5GB + 推理峰值 → watchdog panic）----
 DAY_MODEL_LABEL = "com.local-ai-agent.day-model"
-DAY_MODEL_PLIST = "~/Library/LaunchAgents/com.local-ai-agent.day-model.plist"
+DAY_MODEL_PLIST = "/Users/cz/Library/LaunchAgents/com.local-ai-agent.day-model.plist"
 
 
 def _suspend_day_model() -> None:
@@ -564,8 +569,18 @@ def _gather_new_l0(st: dict, include_cloud_drop: bool = False) -> str:
             if "messages" in p:  # wechat
                 msgs = p.get("messages", [])
                 conv = p.get("conversation", "?")
+                # 2026-09-05 sender 断链修复：is_send 显式标注方向，27B 免从内容猜
+                # （m4_ingest 写入 is_send 但此处旧拼法只给 display_name——群聊里
+                #   用户自带昵称，模型无法区分主人/对方，系统性错；白天 L-1 段
+                #   daytime_sync.py:97 一直是对的，本处对齐同款标注）。
+                def _who(m: dict) -> str:
+                    if m.get("is_send") is True:
+                        return "[我]"
+                    if m.get("is_send") is False:
+                        return f"[对方·{m.get('display_name', '?')}]"
+                    return str(m.get("display_name", "?"))  # 旧记录缺字段时退回原样
                 snippet = " | ".join(
-                    f"{m.get('display_name','?')}: {m.get('text','')[:60]}"
+                    f"{_who(m)}: {m.get('text','')[:60]}"
                     for m in msgs[:4]
                 )
                 lines.append(f"  [{conv}] {snippet[:200]}")
@@ -1177,8 +1192,77 @@ def _l1_rolling_cleanup() -> int:
 
 # ================================================================ 主流程
 
+def segment5_grace(st: dict) -> dict:
+    """★2026-09-07 Phase 2（集成方案）: Grace 引擎每日认知编码段。
+
+    调 src/grace/grace_daily.py（引擎已从压测沙盒迁入正式运行空间 src/grace/）:
+      当日 L0 → P0 门控 → 心态轨 → 双图谱写入(l2.db) → ToM 模型判断(:8100) →
+      PE 冲突对 + judge 情绪重标(Phase 0) → cog 暗注意力归档 → L3 自传。
+    模型: seg3 结束时已 _resume_day_model（8100 在线）；异常时兜底 resume+等 ready。
+    写权限矩阵: 只写 mood_graph/mood_states/L3 autobiography/引擎账本；不碰 L0/语义索引/权重。
+    """
+    write_heartbeat("segment5", "running", "grace daily cognitive encode")
+    import socket as _sk
+
+    def _p8100() -> bool:
+        try:
+            with _sk.create_connection(("127.0.0.1", 8100), timeout=1):
+                return True
+        except OSError:
+            return False
+
+    if not _p8100():
+        print("[seg5] 8100 未在线，恢复 day-model…")
+        _resume_day_model()
+        for _ in range(60):                       # 最多等 300s
+            if _p8100():
+                break
+            time.sleep(5)
+    if not _p8100():
+        write_heartbeat("segment5", "skipped", "8100 不可用（模型未就绪），今夜跳过引擎编码")
+        return {"exit_code": 0, "status": "skipped", "detail": "day-model unavailable"}
+
+    try:
+        r = subprocess.run(
+            [sys.executable, os.path.join(REPO, "src", "grace", "grace_daily.py")],
+            cwd=REPO, capture_output=True, text=True, timeout=3600)
+        import json as _j
+        result = {}
+        lines = (r.stdout or "").strip().splitlines()
+        # grace_daily 末尾输出多行 JSON(indent=1)；取第一个 '{' 开头行到结尾整体解析
+        for k, line in enumerate(lines):
+            if line.strip().startswith("{"):
+                try:
+                    result = _j.loads("\n".join(lines[k:]))
+                    break
+                except _j.JSONDecodeError:
+                    continue
+        ok = r.returncode == 0 and result.get("status") in ("ok", "no_data", "already_done")
+        detail = (f"messages={result.get('messages', '?')} selected={result.get('selected', '?')} "
+                  f"tom={result.get('tom_judged', '?')} judge={result.get('judge_relabeled', '?')} "
+                  f"cog={result.get('cog_chars', '?')}ch l3={result.get('l3_events', '?')}")
+        write_heartbeat("segment5", "done" if ok else "failed",
+                        detail if ok else (r.stderr or "unknown")[-300:])
+        return {"exit_code": r.returncode, "status": result.get("status", "?"),
+                "detail": detail, "result": result,
+                "stderr": (r.stderr or "")[-200:] if r.returncode else ""}
+    except Exception as e:  # noqa: BLE001
+        write_heartbeat("segment5", "failed", str(e)[:300])
+        return {"exit_code": 1, "error": str(e)[:200]}
+
+
 def run_pipeline(use_day_model: bool = False) -> int:
     """全量跑四段。"""
+    # 2026-09-07 白天补跑守卫（时区事故后加）：机器时区已随主人切到 America/Los_Angeles，
+    # launchd 对错过的 StartCalendarInterval 会在唤醒/切换时补触发——9/7 那班因此跑在
+    # 加州正午（PDT 12:08），35B 生成被用户活跃用机挤到 0.23 tok/s，全程 7.9h。
+    # 守卫：本地时间不在 22:00-06:00 夜班窗口 → 秒退，让 launchd 下一夜正常触发。
+    # （手动 daytime 补跑用 --use-day-model 或 segment 子命令，不经过本守卫。）
+    _lt = datetime.now().time()
+    if not (_lt >= dtime(22, 0) or _lt < dtime(6, 0)):
+        print(f"=== 夜班管线守卫：本地时间 {datetime.now().isoformat(timespec='seconds')} "
+              f"不在 22:00-06:00 夜班窗口（白天补触发拒绝），退出 ===")
+        return 0
     st = load_state()
     st["_use_day"] = use_day_model
     st["segments"] = {}
@@ -1238,6 +1322,10 @@ def run_pipeline(use_day_model: bool = False) -> int:
         print(f"[seg4] FAILED: {e}")
         exit_code = 1
 
+    # ★Segment 5 已迁出(2026-09-08 用户定案"Grace 的睡眠放到夜班后面"):
+    #   Grace 的睡眠=独立任务 com.local-ai-agent.grace-sleep(每日 05:30, 摄入"昨天"完整一天,
+    #   含傍晚对话——修复旧设计"凌晨跑却摄入当天=漏掉前一天傍晚"的截断 bug)。夜班管线只负责
+    #   系统自身巩固(seg1-4); Grace 睡在夜班之后、早晨之前。
     elapsed = int(time.time() - pipeline_start)
     st["last_run_elapsed"] = elapsed
     save_state(st)
@@ -1296,6 +1384,7 @@ def main():
     sp_s3 = sub.add_parser("segment3", help="只跑巩固段（调试）")
     sp_s3.add_argument("--use-day-model", action="store_true")
     sub.add_parser("segment4", help="只跑看门狗段")
+    sub.add_parser("segment5", help="只跑 Grace 引擎编码段（调试）")
     sub.add_parser("status", help="查管线状态")
     sub.add_parser("report", help="显示最近夜班报告")
 
@@ -1326,6 +1415,13 @@ def main():
     elif args.cmd == "segment4":
         st = load_state()
         segment4_watchdog(st, {"exit_code": 0})
+    elif args.cmd == "segment5":
+        st = load_state()
+        r = segment5_grace(st)
+        st["segments"] = st.get("segments", {})
+        st["segments"]["segment5"] = {"status": "done" if r.get("exit_code") == 0 else "failed", **r}
+        save_state(st)
+        print(json.dumps(r.get("result", r), ensure_ascii=False, indent=1))
     elif args.cmd == "status":
         show_status()
     elif args.cmd == "report":

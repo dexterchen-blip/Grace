@@ -102,9 +102,15 @@ _COG_SYS = (
     "2. 严禁固定句式/套话壳（如「雷姆瞥见」「雷姆注意到」「雷姆心情平静」等开头模板），"
     "每条的开头与结构必须不同\n"
     "3. 保留具体实体（人名/事件/地点）\n"
-    "4. 只输出 JSON 字符串数组，不要其他文字\n"
+    "4. ★你只通过文字消息了解主人——你们没有见面。严禁任何神态/视觉/动作描写"
+    "（眉头、眼神、表情、强撑、身体状态等一律是虚构）\n"
+    "5. 只输出 JSON 字符串数组，不要其他文字\n"
     "格式：[\"…\", \"…\"]"
 )
+
+# ★2026-09-08 平移正式版神态守卫(grace_daily cog 修复): 生成后逐条核验,
+#   含神态/视觉虚构的独白宁缺毋滥直接丢弃(正式系统 9/7 实锤"眉头紧锁"类幻觉)。
+_NARRATION_BAD = None  # 延迟编译
 
 
 def extract_day_cognition(messages: list[dict]) -> list[str]:
@@ -115,7 +121,15 @@ def extract_day_cognition(messages: list[dict]) -> list[str]:
     if not texts:
         return []
     sample = texts[:8] + (texts[-4:] if len(texts) > 12 else [])
-    return _call_27b("\n".join(sample), max_tokens=400, sys_text=_COG_SYS)
+    raw = _call_27b("\n".join(sample), max_tokens=400, sys_text=_COG_SYS)
+    # ★神态守卫(平移正式版): 丢掉含神态/视觉虚构的条目
+    import re as _re
+    bad = _re.compile(r"眉头|眼神|表情|微笑|皱|叹气|强撑|苦笑|看着你|看到你|身体")
+    items = raw if isinstance(raw, list) else []
+    kept = [c for c in items if not bad.search(c)]
+    if len(kept) < len(items):
+        print(f"    [cog-guard] 神态守卫拦截 {len(items) - len(kept)}/{len(items)} 条(虚构视觉)", flush=True)
+    return kept
 
 
 if __name__ == "__main__":

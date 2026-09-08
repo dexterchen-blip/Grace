@@ -44,7 +44,13 @@ def _clean(text: str) -> str:
 
 
 def _iter_raw(l0_dir: str):
-    """读全部 L0 源 → 产出 (ts_epoch, text, source)。"""
+    """读全部 L0 源 → 产出 (ts_epoch, text, source, sender, is_send)。
+
+    ★2026-09-05 O9 根因修复(9/5 实码: 只取 text 丢 sender/is_send → 书库无轮次结构,
+    主人反应与她输出无配对可学——输出外环/来源实体的数据基础):
+    消息级源保留 sender/is_send(8/28 发现的"L0 原文金矿"终于入库);
+    摘要级源无发送者概念 → sender='' / is_send=None。
+    """
     sources = ["wechat.jsonl", "chat.jsonl", "email.jsonl",
                "exchange:inbox.jsonl", "exchange:school.jsonl", "school.jsonl", "doc:file.jsonl"]
     for fn in sources:
@@ -71,7 +77,7 @@ def _iter_raw(l0_dir: str):
                     ts = m.get("ts") or r.get("epoch")
                     if not isinstance(ts, (int, float)):
                         continue
-                    yield ts, t, fn.replace(".jsonl", "")
+                    yield ts, t, fn.replace(".jsonl", ""), m.get("sender", ""), bool(m.get("is_send", False))
             else:  # 摘要级: email/exchange/school/doc → 解析成条目
                 t = _clean(p.get("text", "")) if isinstance(p, dict) else ""
                 if not t:
@@ -82,7 +88,7 @@ def _iter_raw(l0_dir: str):
                 # 摘要 markdown → 拆成条目(## 标题 + 正文行)
                 for chunk in _split_summary(t):
                     if chunk and not _SKIP.search(chunk):
-                        yield ep, chunk, fn.replace(".jsonl", "")
+                        yield ep, chunk, fn.replace(".jsonl", ""), "", None
 
 
 def _split_summary(text: str) -> list[str]:
@@ -144,10 +150,11 @@ def main() -> None:
     from collections import defaultdict
     by_day: dict[str, list] = defaultdict(list)
     total = 0
-    for ts, text, src in _iter_raw(l0_dir):
+    for ts, text, src, sender, is_send in _iter_raw(l0_dir):
         d = datetime.fromtimestamp(ts, tz=TZ).strftime("%Y-%m-%d")
         by_day[d].append({"text": text[:140], "sentiment": _sentiment(text),
-                          "weight": 0.6, "source": src, "ts": ts})
+                          "weight": 0.6, "source": src, "ts": ts,
+                          "sender": sender, "is_send": is_send})
         total += 1
 
     days = sorted(by_day)
@@ -161,7 +168,9 @@ def main() -> None:
                 "total_raw": total, "files": []}
     for i, d in enumerate(days, 1):
         items = sorted(by_day[d], key=lambda x: x["ts"])
-        msgs = [{"text": it["text"], "sentiment": it["sentiment"], "weight": it["weight"]}
+        # ★2026-09-05 O9: messages 保留 sender/is_send(下游 stress_engine 读 text/sentiment/weight 不受影响)
+        msgs = [{"text": it["text"], "sentiment": it["sentiment"], "weight": it["weight"],
+                 "sender": it.get("sender", ""), "is_send": it.get("is_send")}
                 for it in items]
         rec = {"day": i, "date": d, "messages": msgs,
                "events": [{"text": m["text"], "sentiment": m["sentiment"], "weight": m["weight"]}

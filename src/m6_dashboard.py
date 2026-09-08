@@ -26,6 +26,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -177,7 +178,7 @@ def sleep_state() -> str:
 
 # 记忆注入（2026-08-19 #18）：L3 常驻 + L2 按 query 检索，白天对话不再是"失忆"状态。
 # 设计依据 §3：L3 = 常驻上下文（~2000 token 预算），core.md 3.5KB ≈ 1.2K tokens 直接全塞。
-L2_VENV = "~/.workbuddy/binaries/python/envs/llama-cpp/bin/python"
+L2_VENV = "/Users/cz/.workbuddy/binaries/python/envs/llama-cpp/bin/python"
 L2_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "l2_semantic.py")
 
 
@@ -193,17 +194,46 @@ def _load_l3_context() -> str:
 
 
 def _l2_search_context(query: str) -> str:
-    """按用户问题跑 L2 语义检索（bge-m3 + BM25 混合），best-effort 30s 超时。
-    失败静默降级为仅 L3 —— 检索只是增强，绝不能卡死对话。"""
+    """按用户问题跑 L2 语义检索（bge-m3 + BM25 混合），RRF top-k 命中后沿知识图谱
+    跳 2 跳召回关联文档拼进注入段（2026-09-04 第二步 graph_hops 接检索）。
+    best-effort 30s 超时：图谱增强/JSON 失败 → 静默降级为纯 L2 检索 → 再失败仅 L3。
+    检索只是增强，绝不能卡死对话；图谱只读 l2.db，不写 L0/L3、不碰 persona 隔离。"""
     if not query.strip():
         return ""
-    try:
-        import subprocess
-        r = subprocess.run(
-            [L2_VENV, L2_PY, "search", query.strip()[:120], "-k", "3"],
+    q = query.strip()[:120]
+
+    def _run(extra: list[str]) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [L2_VENV, L2_PY, "search", q, "-k", "3", *extra],
             capture_output=True, text=True, timeout=30, cwd=REPO,
             env={**os.environ, "HF_HUB_OFFLINE": "1"},
         )
+
+    # 主路径：--json --graph 2 —— 同一子进程内先检索再图谱跳转（只付一次 bge-m3 加载）
+    try:
+        r = _run(["--json", "--graph", "2"])
+        if r.returncode == 0 and r.stdout.strip():
+            data = json.loads(r.stdout.strip())
+            hits = data.get("hits") or []
+            base = "\n---\n".join(
+                f"[{h.get('rrf', '')}] {h.get('source', '')} | "
+                f"{(h.get('text') or '')[:150].replace(chr(10), ' / ')}" for h in hits)
+            rel = data.get("related") or []
+            graph = ""
+            if rel:
+                graph = ("\n## 图谱关联跳转（命中文档沿实体关系扩展 2 跳，交叉参考）\n"
+                         + "\n".join(
+                             f"- [{d.get('source', '')}] {(d.get('text') or '')[:150].replace(chr(10), ' / ')}"
+                             for d in rel[:6]))
+            out = base + (("\n" + graph) if graph else "")
+            return out[:3000]
+    except subprocess.TimeoutExpired:
+        return ""   # 超时不再重试（检索只是增强，绝不为图谱拖慢对话）
+    except Exception:
+        pass        # 格式/环境异常 → 尝试一次旧格式降级
+    # 降级：图谱/JSON 不可用时回退原纯 L2 检索输出（与改动前逐字节一致）
+    try:
+        r = _run([])
         if r.returncode == 0 and r.stdout.strip():
             return r.stdout.strip()[:1500]
     except Exception:
@@ -266,12 +296,50 @@ EMAIL_HINT_RE = re.compile(r"邮箱|邮件|抓取|收件箱|来信|信件|gmail|
 # 2026-08-23：问密码/账号/凭据 → 工具模式（vault_list/vault_get）
 VAULT_HINT_RE = re.compile(r"密码|凭据|账号密码|登录信息|cred:|vault|口令", re.IGNORECASE)
 
+# 2026-08-25：显式「深抓」→ 直接执行（不靠 27B 自觉）
+_DEEP_HINT_RE = re.compile(r"深抓|抓全文|深抓邮件|全文抓取|重要邮件全文", re.IGNORECASE)
+
+# 2026-08-26：Canvas → 直接执行（复用夜班 scrape_canvas，同 email_deep _pre_run 模式）
+CANVAS_HINT_RE = re.compile(r"canvas|29225", re.IGNORECASE)
+
+# 2026-08-30：Michelle 升级抓取 → 直接执行（普通抓取失败/卡住/反爬强时）
+MICHELLE_HINT_RE = re.compile(r"michelle|爬虫专家|换种方式抓|抓不到|升级抓取|抓不下来", re.IGNORECASE)
+
+# 2026-09-05：难点升级走 dsh → 后台 spawn dsh headless agent（多步任务/复杂汇总，
+# 突破 4 轮窄工具循环天花板）。正则要求动词搭配，防止聊到 "dsh" 本身时误触发。
+DSH_HINT_RE = re.compile(r"走\s*dsh|dsh\s*跑|交给\s*dsh|用\s*dsh|dsh\s*agent|agent\s*跑|升级到\s*dsh", re.IGNORECASE)
+
+# dsh 升级任务产物与互斥（2026-09-05）
+DSH_OUT_DIR = os.path.join(REPO, "exchange", "dsh-out")
+DSH_BUSY = os.path.join(REPO, "exchange", ".dsh-busy")
+
 TOOL_EMAIL_SCRAPE = {
     "type": "function",
     "function": {
         "name": "email_scrape",
         "description": "抓取本地邮箱（Gmail UCSB+个人）生成今日摘要到 exchange/.daytime/ "
                        "（L-1 瞬时记忆，不进正式记忆，隔夜即清）。用户问邮箱内容/邮件/抓取/收件箱时调用。",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+TOOL_EMAIL_DEEP = {
+    "type": "function",
+    "function": {
+        "name": "email_deep",
+        "description": "对今日邮箱摘要做深度抓取：AI 挑重要邮件 → 抓完整正文 → "
+                       "写 exchange/inbox/email/邮箱深度-<日期>.md。用户要求「深抓/抓全文/看重要邮件全文」时调用。",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+TOOL_CANVAS_SCRAPE = {
+    "type": "function",
+    "function": {
+        "name": "canvas_scrape",
+        "description": "抓取 Canvas 课程内容（课程页面正文 + 文件附件 + 公告，复用夜班 scrape_canvas）。"
+                       "学术诚信红线：绝不触碰测验/LTI/Learnosity 题目，只抓 Page/文件/公告。"
+                       "用户问 Canvas 课程/29225/培训课内容时调用。",
         "parameters": {"type": "object", "properties": {}},
     },
 }
@@ -287,10 +355,27 @@ TOOL_READ_FILE = {
     },
 }
 
+# 2026-08-30：Michelle 升级抓取工具（独立功能面）。
+# 触发：普通抓取失败/卡住、目标反爬强（403/Cloudflare/验证码）、27B 自主判断需换策略。
+# 执行：子进程调 src/michelle/run_michelle.py；模型铁律由 router.model_gate() 保证
+# （只复用已在跑的 27B :8100，35B 驻留时段拒绝升级，绝不启动第二个模型）。
+TOOL_MICHELLE = {
+    "type": "function",
+    "function": {
+        "name": "michelle_scrape",
+        "description": "升级抓取（Michelle 自主爬虫智能体）：普通抓取失败、目标反爬强、"
+                       "或需要换工具重试时调用。输入 task 描述要抓什么（含 URL 和目标）。"
+                       "返回收敛报告摘要；失败也如实说明，不编造。",
+        "parameters": {"type": "object", "properties": {
+            "task": {"type": "string", "description": "抓取目标描述，如 '抓取 https://example.com 的课程列表内容'"}},
+            "required": ["task"]},
+    },
+}
+
 # 2026-08-23：vault 密钥工具（用户要求「本地 AI 可以告知我的密码」）。
 # 安全：vault_get 返回的密码用 ⟦secret⟧ 标记包裹，log_chat_to_l0 对标记区间打码，
 # 密码绝不进 L0/L3/记忆；只在本地对话里展示给用户本人。
-VAULT_PY = ["~/.workbuddy/binaries/python/versions/3.13.12/bin/python3",
+VAULT_PY = ["/Users/cz/.workbuddy/binaries/python/versions/3.13.12/bin/python3",
             os.path.join(os.path.dirname(os.path.abspath(__file__)), "vault.py")]
 SECRET_OPEN, SECRET_CLOSE = "⟦secret⟧", "⟦/secret⟧"
 
@@ -338,11 +423,161 @@ TOOL_VAULT_SET = {
 }
 
 
+def _dsh_busy_alive() -> bool:
+    """.dsh-busy 是否对应存活进程（防 dashboard 重启后的僵尸 busy 永久锁死）。"""
+    try:
+        with open(DSH_BUSY, encoding="utf-8") as f:
+            info = json.load(f)
+        pid = int(info.get("pid") or 0)
+        if pid > 0:
+            os.kill(pid, 0)  # 存活探测（不发信号）
+            return True
+        return True
+    except ProcessLookupError:
+        return False  # pid 已死 → 僵尸 busy，清
+    except (OSError, ValueError):
+        return False  # 文件缺失/损坏 → 无 busy
+
+
+def _exec_dsh_task(query: str) -> str:
+    """2026-09-05 难点升级走 dsh：后台 spawn dsh headless agent 跑多步任务。
+
+    - 产物约定：dsh 把汇总写 exchange/dsh-out/<ts>/result.md（AGENTS.md 已约定）
+    - .dsh-busy 互斥：dashboard 与 dsh 共用 :8100（mlx_lm 串行），dsh 任务期间
+      普通 /chat 请求会排队超时——busy 时拒绝再次升级；dsh 结束自动清 busy。
+    -     本函数只 spawn 不等待（headless 一跑 2-10 分钟，同步等必超时）。
+    """
+    if os.path.exists(DSH_BUSY) and _dsh_busy_alive():
+        return ("已有一个 dsh 任务在跑（27B :8100 串行，勿并发）。"
+                "完成后本提示自动消失，可到 /dsh 页查看进度。")
+    try:
+        os.remove(DSH_BUSY)
+    except OSError:
+        pass
+    os.makedirs(DSH_OUT_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    task_dir = os.path.join(DSH_OUT_DIR, ts)
+    os.makedirs(task_dir, exist_ok=True)
+    task_desc = (query or "").strip()[:800] or "(空任务)"
+    with open(os.path.join(task_dir, "task.txt"), "w", encoding="utf-8") as f:
+        f.write(task_desc)
+    with open(DSH_BUSY, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"ts": ts, "pid": 0, "started": time.time()}))
+    prompt = (
+        f"复杂任务升级（来自 dashboard 对话）。任务：{task_desc}\n"
+        f"要求：\n"
+        f"1. 多步完成；需要抓取时用 michelle_scrape MCP 工具（报告全文用 fs 读产物 md）。\n"
+        f"2. 最终汇总写到 exchange/dsh-out/{ts}/result.md，文件头一行任务描述+完成时间。\n"
+        f"3. Canvas 任务只碰 Page/文件/公告，绝不碰测验 quiz（不可覆盖红线）。\n"
+        f"4. 敏感数据只落本地，永不过境。"
+    )
+    log_f = open(os.path.join(task_dir, "headless.log"), "w")
+    try:
+        proc = subprocess.Popen(
+            ["./run_headless.sh", prompt],
+            cwd=REPO, stdout=log_f, stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except Exception as e:
+        log_f.close()
+        try:
+            os.remove(DSH_BUSY)
+        except OSError:
+            pass
+        return f"dsh 升级启动失败: {type(e).__name__}: {str(e)[:120]}"
+    with open(DSH_BUSY, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"ts": ts, "pid": proc.pid, "started": time.time()}))
+
+    def _watch(p: subprocess.Popen, t: str) -> None:
+        rc = p.wait()
+        try:
+            os.remove(DSH_BUSY)
+        except OSError:
+            pass
+        try:
+            with open(os.path.join(DSH_OUT_DIR, t, "status.txt"), "w", encoding="utf-8") as f:
+                f.write(f"exit={rc} finished={datetime.now().isoformat(timespec='seconds')}\n")
+        except OSError:
+            pass
+    threading.Thread(target=_watch, args=(proc, ts), daemon=True).start()
+    return (
+        f"[已升级给 dsh agent 执行]\n任务号 {ts}（pid {proc.pid}）\n"
+        f"产物将写 exchange/dsh-out/{ts}/result.md；进度见 dashboard /dsh 页。\n"
+        f"注意：dsh 任务期间 27B(:8100) 被占用，普通对话可能变慢，完成后自动恢复。\n"
+        f"请向用户转述：任务已交给 dsh 后台执行，稍后查看结果即可。"
+    )
+
+
 def _exec_tool(name: str, args_str: str) -> str:
     """执行工具，返回结果文本。安全：read_file 仅允许 exchange/ 内文件。"""
     global _vault_touched
     if name == "email_scrape":
         return _run_email_scrape()
+    if name == "email_deep":
+        # 2026-08-25：对话触发深抓（复用夜班 email_deep.run()；沙盒时写沙盒 exchange）
+        try:
+            import email_deep
+            n = email_deep.run(max_n=6)
+            if n > 0:
+                return f"深抓完成：{n} 封重要邮件全文已写入 inbox/email/邮箱深度-{email_deep.today()}.md"
+            return "深抓没有可处理的重要邮件（今日浅抓摘要不存在则先跑 email_scrape）"
+        except Exception as e:
+            return f"深抓失败: {type(e).__name__}: {str(e)[:120]}"
+    if name == "canvas_scrape":
+        # 2026-08-26：对话触发 Canvas 抓取（复用夜班 scrape.scrape_canvas，light 模式跳过渲染/OCR/27B；
+        # 合规：Page/文件/公告，绝不 quiz）。回传真实内容供 27B 总结，不给空壳结果。
+        try:
+            sys.path.insert(0, os.path.join(REPO, "src"))
+            import scrape
+            n = scrape.scrape_canvas(light=True)
+            txt = ""
+            cdir = os.path.join(EXCHANGE, "school", "ucsb-scrape", "canvas")
+            if os.path.isdir(cdir):
+                cands = [f for f in os.listdir(cdir)
+                         if f.startswith("canvas-29225-") and f.endswith(".md") and "-kb-" not in f]
+                if cands:
+                    newest = max(cands, key=lambda f: os.path.getmtime(os.path.join(cdir, f)))
+                    with open(os.path.join(cdir, newest), encoding="utf-8") as fh:
+                        txt = fh.read()[:2000]
+            if txt:
+                return (f"Canvas 抓取完成（exchange 新增 {n} 件，未触碰测验/LTI）。课程内容：\n{txt}")
+            if n:
+                return f"Canvas 抓取完成：新增 {n} 件（页面/附件/公告，未触碰测验/LTI）"
+            return "Canvas 无新产出（今日已抓过或会话过期需重新登录）"
+        except Exception as e:
+            return f"Canvas 抓取失败: {type(e).__name__}: {str(e)[:120]}"
+    if name == "michelle_scrape":
+        # 2026-08-30：Michelle 升级抓取。task 缺省 = 用户最近一问（_pre_run 直发场景）。
+        try:
+            task = (json.loads(args_str or "{}").get("task") or "").strip()
+        except Exception:
+            task = ""
+        if not task:
+            return "michelle_scrape 需要 task 参数（描述要抓什么，含 URL 与目标）"
+        try:
+            import subprocess as _sp
+            sys.path.insert(0, os.path.join(REPO, "src"))
+            from michelle.router import model_gate
+            gate_ok, reason = model_gate()
+            if not gate_ok:
+                return f"Michelle 升级被拒（模型铁律）: {reason[:120]}"
+            out_dir = os.path.join(EXCHANGE, "michelle",
+                                   datetime.now(TZ_CN).strftime("%Y%m%d-%H%M%S"))
+            r = _sp.run([sys.executable, os.path.join(REPO, "src", "michelle",
+                                                      "run_michelle.py"),
+                         task, "--max-turns", "3", "--out", out_dir],
+                        capture_output=True, text=True, timeout=240, cwd=REPO)
+            tail = (r.stdout or r.stderr or "")[-1500:]
+            return f"Michelle 升级抓取完成（out={os.path.relpath(out_dir, REPO)}）：\n{tail}"
+        except Exception as e:
+            return f"Michelle 升级抓取失败: {type(e).__name__}: {str(e)[:120]}"
+    if name == "dsh_escalate":
+        # 2026-09-05：难点升级走 dsh（异步 spawn，立即返回任务号）
+        try:
+            task = (json.loads(args_str or "{}").get("task") or "").strip()
+        except Exception:
+            task = ""
+        return _exec_dsh_task(task)
     if name == "read_file":
         try:
             fp = json.loads(args_str or "{}").get("file_path", "")
@@ -430,18 +665,36 @@ def _run_email_scrape() -> str:
         _scrape_lock.release()
 
 
-def _chat_with_tools(history: list[dict], stream: bool):
+def _chat_with_tools(history: list[dict], stream: bool, _pre_run: str = ""):
     """工具模式：带 email_scrape/read_file 工具做多轮循环（最多 4 轮）。
     27B 可主动请求抓取邮箱、读摘要文件，执行后回填再继续，直到给出最终回答。
+    _pre_run（2026-08-25）：显式关键词触发时，先直接执行工具（如 email_deep），
+    把结果注入上下文再让 27B 总结——不依赖 27B 的工具决策。
     返回：字符串（stream=False）或一次性生成器（stream=True，最终回答整段 yield）。"""
     import urllib.request
     msgs = [{"role": m["role"], "content": m["content"]} for m in history[-12:]]
     query = msgs[-1]["content"] if msgs else ""
+    if _pre_run:
+        pre_args = "{}"
+        if _pre_run == "michelle_scrape":
+            # Michelle 直发：把用户最近一问当 task（截断防注入）
+            q = msgs[-1]["content"] if msgs else ""
+            pre_args = json.dumps({"task": q[:500]})
+        elif _pre_run == "dsh_escalate":
+            # 2026-09-05：难点升级——异步 spawn，立即回任务号（不阻塞对话）
+            q = msgs[-1]["content"] if msgs else ""
+            pre_args = json.dumps({"task": q[:800]})
+        pre = _exec_tool(_pre_run, pre_args)
+        # 2026-08-26：措辞改朴素（避免工具暗示触发 27B 复读机退化循环）；
+        # 总结限 max_tokens=1500 + temp 0.5；失败兜底返回工具原文，绝不留空
+        msgs.append({"role": "user", "content":
+                     f"[已执行 {_pre_run}]\n{pre}\n\n请直接总结关键信息回答用户的问题。"})
+        query = msgs[-1]["content"]
     msgs.insert(0, {"role": "system", "content": _build_chat_system(query)})
 
-    def _call(payload_msgs, tools=None, stream_flag=False):
+    def _call(payload_msgs, tools=None, stream_flag=False, max_tokens=8192, temperature=0.7):
         body = {"model": DAY_MODEL_ID, "messages": payload_msgs,
-                "max_tokens": 8192, "temperature": 0.7}
+                "max_tokens": max_tokens, "temperature": temperature}
         if tools:
             body["tools"] = tools
         if stream_flag:
@@ -450,7 +703,24 @@ def _chat_with_tools(history: list[dict], stream: bool):
                                      headers={"Content-Type": "application/json"}, method="POST")
         return urllib.request.urlopen(req, timeout=300)
 
-    TOOLS = [TOOL_EMAIL_SCRAPE, TOOL_READ_FILE, TOOL_VAULT_LIST, TOOL_VAULT_GET, TOOL_VAULT_SET]
+    TOOLS = [TOOL_EMAIL_SCRAPE, TOOL_EMAIL_DEEP, TOOL_CANVAS_SCRAPE,
+             TOOL_READ_FILE, TOOL_VAULT_LIST, TOOL_VAULT_GET, TOOL_VAULT_SET,
+             TOOL_MICHELLE]
+    # 2026-08-25：_pre_run 已把结果注入上下文 → 直接单轮总结，绝不进工具循环（防循环超限）
+    if _pre_run:
+        content = ""
+        try:
+            resp = json.loads(_call(msgs, max_tokens=1500, temperature=0.5).read())
+            content = resp["choices"][0]["message"].get("content") or ""
+        except Exception:
+            content = ""
+        if not content.strip():
+            content = f"（27B 总结失败，以下为工具原始结果）\n{pre[:2000]}"
+        if not stream:
+            return content
+        def _once():
+            yield content
+        return _once()
     for _rnd in range(4):
         try:
             resp = json.loads(_call(msgs, tools=TOOLS).read())
@@ -498,10 +768,22 @@ def chat_with_day_model(history: list[dict], stream: bool = False):
     2026-08-20：服务端已 enable_thinking=false（serve_day.sh），不再加 /no_think；
     用户消息含邮箱/邮件/抓取关键词 → 工具模式（27B 可主动请求 email_scrape 触发抓取）；
     stream=True 返回生成器（SSE delta 文本），False 返回完整字符串。max_tokens 8192。"""
-    if history and history[-1].get("role") == "user" and (
-            EMAIL_HINT_RE.search(history[-1]["content"])
-            or VAULT_HINT_RE.search(history[-1]["content"])):
-        return _chat_with_tools(history, stream)
+    if history and history[-1].get("role") == "user":
+        _q = history[-1]["content"]
+        # 2026-08-25：显式「深抓」→ 不经 27B 工具决策，直接执行深抓（27B 靠自觉不可靠）
+        if _DEEP_HINT_RE.search(_q):
+            return _chat_with_tools(history, stream, _pre_run="email_deep")
+        # 2026-08-26：Canvas → 直接执行（复用夜班 scrape_canvas）
+        if CANVAS_HINT_RE.search(_q):
+            return _chat_with_tools(history, stream, _pre_run="canvas_scrape")
+        # 2026-08-30：Michelle 升级抓取 → 直接执行（普通抓取失败/卡住/反爬强）
+        if MICHELLE_HINT_RE.search(_q):
+            return _chat_with_tools(history, stream, _pre_run="michelle_scrape")
+        # 2026-09-05：难点升级走 dsh → 后台 spawn headless agent（多步任务/复杂汇总）
+        if DSH_HINT_RE.search(_q):
+            return _chat_with_tools(history, stream, _pre_run="dsh_escalate")
+        if EMAIL_HINT_RE.search(_q) or VAULT_HINT_RE.search(_q):
+            return _chat_with_tools(history, stream)
     import urllib.request
     msgs = [{"role": m["role"], "content": m["content"]} for m in history[-12:]]
     if msgs and msgs[-1]["role"] == "user":
@@ -799,6 +1081,12 @@ footer {{ padding:10px 20px; color:var(--dim); font-size:12px; }}
 </script>
 <header>
   <h1>🐳 本地 AI Dashboard</h1>
+  <nav style="font-size:13px;display:flex;gap:14px;align-items:center">
+    <a href="/grace" style="color:#4fb3ff;text-decoration:none">💙 Grace</a>
+    <a href="/mind" style="color:#7fa3bd;text-decoration:none">心智数据</a>
+    <a href="/l3" style="color:#7fa3bd;text-decoration:none">L3</a>
+    <a href="/dsh" style="color:#7fa3bd;text-decoration:none">dsh</a>
+  </nav>
   <span class="state">
     <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">
       🎚 <input type="range" id="opaSlider" min="10" max="95" value="45"
@@ -1058,6 +1346,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        if ctype.startswith("text/html"):
+            # ★2026-09-07: HTML 禁缓存——页面迭代频繁, 防旧 HTML 卡住新样式(背景不显示类问题)
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
         self.wfile.write(data)
 
@@ -1068,6 +1359,69 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/data":
             self._send(json.dumps(collect_panels(), ensure_ascii=False),
                        200, "application/json; charset=utf-8")
+        elif path == "/dsh":
+            # 2026-09-05：dsh 升级任务状态页（只读 exchange/dsh-out/）
+            rows = []
+            if os.path.isdir(DSH_OUT_DIR):
+                for d in sorted(os.listdir(DSH_OUT_DIR), reverse=True)[:20]:
+                    td = os.path.join(DSH_OUT_DIR, d)
+                    if not os.path.isdir(td):
+                        continue
+                    task = status = "—"
+                    has_result = os.path.exists(os.path.join(td, "result.md"))
+                    try:
+                        with open(os.path.join(td, "task.txt"), encoding="utf-8") as f:
+                            task = f.readline().strip()[:80]
+                    except OSError:
+                        pass
+                    try:
+                        with open(os.path.join(td, "status.txt"), encoding="utf-8") as f:
+                            status = f.readline().strip()
+                    except OSError:
+                        status = "running" if (os.path.exists(DSH_BUSY)
+                                               and _dsh_busy_alive()) else "?"
+                    rows.append(f"<tr><td style='padding:4px 10px'>{d}</td>"
+                                f"<td style='padding:4px 10px'>{html.escape(task)}</td>"
+                                f"<td style='padding:4px 10px'>{'✅' if has_result else '—'}</td>"
+                                f"<td style='padding:4px 10px'>{html.escape(status)}</td></tr>")
+            busy = "🟢 空闲" if not (os.path.exists(DSH_BUSY) and _dsh_busy_alive()) else "🔴 dsh 任务运行中"
+            self._send(
+                f'<!doctype html><meta charset="utf-8"><title>dsh tasks</title>'
+                f'<meta http-equiv="refresh" content="15">'
+                f'<body style="background:#0a1420;color:#dceef9;font:14px -apple-system,sans-serif;padding:20px">'
+                f'<h2 style="margin:0 0 10px">dsh 升级任务</h2>'
+                f'<p>27B(:8100) 状态: {busy}（15s 自动刷新）· <a href="/" style="color:#7fb8e0">返回首页</a></p>'
+                f'<table border="0" cellpadding="0" style="border-collapse:collapse">'
+                f'<tr style="color:#7fb8e0"><th style="text-align:left;padding:4px 10px">时间</th>'
+                f'<th style="text-align:left;padding:4px 10px">任务</th>'
+                f'<th style="text-align:left;padding:4px 10px">result.md</th>'
+                f'<th style="text-align:left;padding:4px 10px">状态</th></tr>'
+                f'{''.join(rows) or '<tr><td colspan=4 style="padding:10px">暂无任务</td></tr>'}'
+                f'</table></body>', 200, "text/html; charset=utf-8")
+        elif path == "/grace/api/proactive":
+            # 2026-09-07: 雷姆主动消息信箱(自唤醒→她主动对话)
+            try:
+                from grace_chat import handle_proactive_get
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                since = float(q.get("since", ["0"])[0])
+                self._send(json.dumps(handle_proactive_get(since), ensure_ascii=False),
+                           200, "application/json; charset=utf-8")
+            except Exception as e:  # noqa: BLE001
+                self._send(json.dumps({"error": str(e)[:100]}), 500, "application/json")
+        elif path == "/grace":
+            # 2026-09-07：Grace 心智对话页（AI 助手形态，独立于运维面板；Phase 3 提前实现）
+            try:
+                from grace_chat import render_grace_page
+                self._send(render_grace_page())
+            except Exception as e:  # noqa: BLE001 —— Grace 页绝不拖挂 dashboard
+                self._send(f"grace page error: {html.escape(str(e)[:120])}", 500)
+        elif path == "/mind":
+            # 2026-09-07：Grace 心智视图（Phase 1 只读集成，蓝图 §2.2）——数据层在 src/mind_api.py
+            try:
+                from mind_api import render_mind_page
+                self._send(render_mind_page())
+            except Exception as e:  # noqa: BLE001 —— Grace 页绝不拖挂 dashboard
+                self._send(f"mind view error: {html.escape(str(e)[:120])}", 500)
         elif path.startswith("/assets/"):
             self._send_asset(path)
         elif path == "/l3":
@@ -1119,6 +1473,37 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path == "/chat":
             self._handle_chat()
+            return
+        if path == "/grace/api/heartbeat":
+            try:
+                from grace_chat import handle_heartbeat
+                self._send(json.dumps(handle_heartbeat(), ensure_ascii=False),
+                           200, "application/json; charset=utf-8")
+            except Exception as e:  # noqa: BLE001
+                self._send(json.dumps({"error": str(e)[:80]}), 500, "application/json")
+            return
+        if path == "/grace/api/proactive/ack":
+            try:
+                from grace_chat import handle_proactive_ack
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                handle_proactive_ack(float(body.get("ts", 0)))
+                self._send('{"ok":true}', 200, "application/json")
+            except Exception as e:  # noqa: BLE001
+                self._send(json.dumps({"error": str(e)[:100]}), 500, "application/json")
+            return
+        if path == "/grace/api/chat":
+            # 2026-09-07：Grace 心智对话（persona+输出层约束 → 8100 → monitor → L0 mode=rem）
+            try:
+                from grace_chat import handle_grace_chat
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                code, payload = handle_grace_chat(body)
+                self._send(json.dumps(payload, ensure_ascii=False),
+                           code, "application/json; charset=utf-8")
+            except Exception as e:  # noqa: BLE001
+                self._send(json.dumps({"error": str(e)[:120]}),
+                           500, "application/json; charset=utf-8")
             return
         if path == "/scrape/email":
             self._handle_scrape_email()
