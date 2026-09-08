@@ -1436,8 +1436,11 @@ def main():
                             "messages": _msgs,
                             "cog": sum((r.get("cog") or [] for r in _grp), []),
                             "gist": sum((r.get("gist") or [] for r in _grp), []),
-                            "_sim_sources": [r["messages"][0]["text"] for r in _grp
-                                             if r.get("messages")]})
+                            "_sim_sources": [t for t in (
+                                # ★2026-09-09 方向修正第二刀: 触发源只取主人自己的话(is_send=True)。
+                                #   原来取每组第一条消息——往往是别人说的, 方向过滤器会全拦 → chat-sim 静默空转
+                                next((m.get("text") for m in r.get("messages", []) if m.get("is_send")), None)
+                                for r in _grp) if t]})
         files = [None] * len(_merged)          # 占位: 循环改为读 _merged
         _merged_mode = _merged
         logln(f"  [density] ×{_K}: {len(_recs)} 源天 → {len(_merged)} 模拟天"
@@ -1923,7 +1926,8 @@ def main():
         try:
             _sim_inputs = rec.get("_sim_sources") or []
             if not _sim_inputs:
-                _s0 = next((mm["text"] for i, mm in enumerate(msgs) if _sel[i]), None)
+                _s0 = next((mm["text"] for i, mm in enumerate(msgs)
+                            if _sel[i] and mm.get("is_send", True)), None)  # ★方向修正: 兜底也只取主人话术
                 _sim_inputs = [_s0] if _s0 else []
             for _si_text in _sim_inputs:
                 # ★2026-09-09 说话方向修正(用户: "'陈泽，我们开始？'你不觉得很奇怪吗"):
@@ -1933,6 +1937,7 @@ def main():
                 #   只有 is_send=True(主人真实话术)才走 /grace 管线。
                 _mm = next((mm for mm in msgs if mm.get("text") == _si_text), None)
                 if _mm is not None and not _mm.get("is_send", True):
+                    logln(f"  [chat-sim] d{day}: 旁听跳过(非主人话术): {_si_text[:20]}")
                     _wm_add(day, f"[旁听] {_si_text}")
                     continue
                 _sent = next((float(mm.get("sentiment", 0) or 0) for mm in msgs
