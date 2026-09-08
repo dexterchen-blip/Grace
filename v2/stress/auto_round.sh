@@ -48,9 +48,9 @@ final = root + \"/experiments/run/stress/final.json\"
 #   rc!=0 不读 final(标 abnormal), 只有正常完成才带统计。
 if $RC == 0 and os.path.isfile(final):
     f = json.load(open(final))
-    row.update({"elapsed_s": f.get("elapsed_s"), "trained_n": len(f.get("trained", [])),
-                "ok": sum(1 for t in f.get("trained", []) if t.get("ok")),
-                "breakpoints": len(f.get("samples", []))})
+    row.update({\"elapsed_s\": f.get(\"elapsed_s\"), \"trained_n\": len(f.get(\"trained\", [])),
+                \"ok\": sum(1 for t in f.get(\"trained\", []) if t.get(\"ok\")),
+                \"breakpoints\": len(f.get(\"samples\", []))})
 elif $RC != 0:
     row[\"note\"] = \"abnormal exit, stats skipped\"
 if fps:
