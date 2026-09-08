@@ -166,7 +166,7 @@ def _sim_dialogue(day: int, user_text: str, sentiment: float = 0.0,
     T1 日内(底色→hidden→心态轨→当日工作记忆) → T2 书库检索+消息。工作记忆=当日事件
     滚动摘要, 天末清空; 书库记忆=当日消息的 L2 语义检索, 每轮动态。"""
     l2p = os.path.join(config.SB, "memory", "L2_semantic", "l2.db")
-    _wm_add(day, user_text)              # 对话轮本身也是工作记忆事件
+    _wm_add(day, f"[主人说] {user_text}")   # 对话轮本身也是工作记忆事件(触发源已过滤=主人话术)
     # ---- T1 内部状态(按变化频率升序收集) ----
     _mood_line, _trend_line, _hidden, _base_eh = "", "", [], []
     try:
@@ -215,7 +215,9 @@ def _sim_dialogue(day: int, user_text: str, sentiment: float = 0.0,
         "潜台词说破=失礼；严禁叙述体/动作描写/旁白。"
     _wm = _wm_digest(day)
     if _wm:
-        sysc += f"\n（今天·工作记忆——已发生的事, 要点式, 自然记得但别逐条复述）\n{_wm}"
+        sysc += (f"\n（今天·工作记忆——已发生的事, 要点式, 自然记得但别逐条复述。"
+                 f"[主人说]=主人对你说的；[旁听]=你看到的别人对主人说的话, 不是对你说的,"
+                 f"不该由你回应）\n{_wm}")
     _inner = []
     if _base_eh:
         _inner.append("主人近3天情绪底色: " + "、".join(f"{k}x{v}" for k, v in _base_eh))
@@ -1528,9 +1530,10 @@ def main():
             for i, m in enumerate(msgs):
                 apply_intraday_event({"text": m["text"], "sentiment": m.get("sentiment", 0), "weight": m.get("weight", 1.0)},
                                      ts=m.get("ts") or day_ts(day, 10 + i))   # ★真实 ts(对齐正式)
-            # ★2026-09-09 KV 工作记忆: 当日书库/对话事件进滚动摘要(chat-sim T1 可引用)
+            # ★2026-09-09 KV 工作记忆: 当日书库/对话事件进滚动摘要(chat-sim T1 可引用);
+            #   带方向标注([主人说]/[旁听])——她需要知道每条话是谁对谁说的
             for m in msgs:
-                _wm_add(day, m["text"])
+                _wm_add(day, ("[主人说] " if m.get("is_send") else "[旁听] ") + m["text"])
         except Exception as e:  # noqa: BLE001
             logln(f"  [mood] day {day} 异常: {e}")
         # ③ ★ 双图谱摄入（2026-08-29 集成：记忆×情绪×暗注意力，呼应机制全链路）
@@ -1879,6 +1882,15 @@ def main():
                 _s0 = next((mm["text"] for i, mm in enumerate(msgs) if _sel[i]), None)
                 _sim_inputs = [_s0] if _s0 else []
             for _si_text in _sim_inputs:
+                # ★2026-09-09 说话方向修正(用户: "'陈泽，我们开始？'你不觉得很奇怪吗"):
+                #   is_send=False 的消息是"别人对主人说话"(叫主人的名字/通知主人),
+                #   不是主人对雷姆说的——当对话触发源=方向错位, 她被迫回应一句根本
+                #   不是对她说的话。改: 旁听进工作记忆(标[旁听]), 不触发回复;
+                #   只有 is_send=True(主人真实话术)才走 /grace 管线。
+                _mm = next((mm for mm in msgs if mm.get("text") == _si_text), None)
+                if _mm is not None and not _mm.get("is_send", True):
+                    _wm_add(day, f"[旁听] {_si_text}")
+                    continue
                 _sent = next((float(mm.get("sentiment", 0) or 0) for mm in msgs
                               if mm.get("text") == _si_text), 0.0)
                 from mlx_lm import generate as _gen
