@@ -273,6 +273,32 @@ def _day_memory() -> str:
         return ""
 
 
+def _wm_echo_guard(reply: str, thresh: float = 0.55) -> bool:
+    """★2026-09-09 WM 回声防线(社区 identity bleed: 短/空输入→模型抓最显著邻近文本
+    =工作记忆原文回声)。回声样本落 L0 mode=rem 会回流训练污染成长语料(成长语料铁律
+    精神), 故落库前拦截。判定: 规范化后与任一 digest 行互含或 difflib 相似度≥阈值。"""
+    import difflib
+    _r = re.sub(r"[\s，。,.:：;；!！?？@~～]+", "", reply)
+    if len(_r) < 6:
+        return False
+    try:
+        d = json.load(open(os.path.join(REPO, "exchange", "grace", "day-memory.json"),
+                           encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return False
+    if d.get("date") != time.strftime("%Y-%m-%d"):
+        return False
+    for line in (d.get("digest", "") or "").splitlines():
+        e = re.sub(r"^[·•]\s*", "", line.strip())
+        if len(e) < 6:
+            continue
+        if _r in e or e in _r:
+            return True
+        if difflib.SequenceMatcher(None, _r, e).ratio() >= thresh:
+            return True
+    return False
+
+
 def grace_system_prompt(user_text: str) -> str:
     """★2026-09-09 KV 分层重排（用户批准"全部升级"）：
     T0 恒定(persona+表达约束) → T1 日内(inner_world 升序 + 当日工作记忆) → T2 每消息动态。
@@ -283,7 +309,10 @@ def grace_system_prompt(user_text: str) -> str:
     inner = _inner_world()
     base = f"{_REM_PERSONA}\n\n{_EXPRESS_RULES}"
     if day:
-        base += f"\n（今天·工作记忆——你和主人之间已经发生的事, 要点式, 自然记得但别逐条复述）\n{day}"
+        # ★正向措辞(社区 identity bleed 实证: "别复述"类否定指令 backfire——反而教出复述
+        #   模式; 正向"只用你自己的话回应"才有效)
+        base += (f"\n（今天·工作记忆——你和主人之间已经发生的事。回应时只用你自己的话，"
+                 f"像亲历这些事的当事人那样自然提起。）\n{day}")
     if inner:
         base += f"\n（内心世界·实时）\n{inner}"
     # T2: 每消息动态（时间/消息情绪/检索/自传切片）
@@ -480,6 +509,16 @@ def handle_grace_chat(body: dict) -> tuple[int, dict]:
     #   同一 1-3 字片段连续 ≥6 次 = 退化生成, 宁缺毋滥丢弃
     if reply and re.search(r"(.{1,3})\1{5,}", reply.replace("。", "").replace("，", "")):
         reply = ""
+    # ★2026-09-09 WM 回声防线(社区 identity bleed 实证: 空输入→抓最显著邻近文本=工作
+    #   记忆原文回声; 回声落 L0 mode=rem 会回流训练污染成长语料)——重生成一次, 仍回声则丢弃
+    if reply and _wm_echo_guard(reply):
+        _msgs2 = [{"role": "system", "content": grace_system_prompt(user_text)
+                   + "\n（只用你自己的话回应，凭印象说话。）"}] + [
+            {"role": m["role"], "content": m["content"]} for m in history[-12:]]
+        reply = _chat_raw(_msgs2, max_tokens=500)
+        reply = _monitor(reply)
+        if reply and _wm_echo_guard(reply):
+            reply = ""
     meta = {"plugin": plugin,
             "monitor": ("filtered" if (raw.strip() and not reply) else
                         "repeat-guard" if reply == "" and raw.strip() else "pass"),

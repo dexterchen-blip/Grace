@@ -156,6 +156,25 @@ def _wm_digest(day: int, cap: int = 24) -> str:
     return "\n".join(f"· {t}" for t in _WM.get(day, [])[-cap:])
 
 
+def _wm_echo(reply: str, day: int, thresh: float = 0.55) -> bool:
+    """★2026-09-09 WM 回声防线(社区 identity bleed 实证: 空输入→抓最显著邻近文本续写)。
+    reply 与当日工作记忆条目高相似 → 判回声。必须在落 L0 前拦截——回声样本回流训练
+    =污染成长语料自我强化(成长语料铁律精神)。"""
+    import difflib
+    _r = re.sub(r"[\s，。,.:：;；!！?？@~～]+", "", reply)
+    if len(_r) < 6:
+        return False
+    for entry in _WM.get(day, []):
+        e = re.sub(r"^\[(主人说|旁听)\]", "", entry)
+        if not e:
+            continue
+        if _r in e or e in _r:
+            return True
+        if difflib.SequenceMatcher(None, _r, e).ratio() >= thresh:
+            return True
+    return False
+
+
 def _sim_dialogue(day: int, user_text: str, sentiment: float = 0.0,
                   model=None, tok=None, sampler=None, gen_fn=None) -> dict:
     """★2026-09-08 对话输入方式对齐正式系统: 沙盒重放 /grace 完整管线——
@@ -215,9 +234,11 @@ def _sim_dialogue(day: int, user_text: str, sentiment: float = 0.0,
         "潜台词说破=失礼；严禁叙述体/动作描写/旁白。"
     _wm = _wm_digest(day)
     if _wm:
-        sysc += (f"\n（今天·工作记忆——已发生的事, 要点式, 自然记得但别逐条复述。"
-                 f"[主人说]=主人对你说的；[旁听]=你看到的别人对主人说的话, 不是对你说的,"
-                 f"不该由你回应）\n{_wm}")
+        # ★2026-09-09 正向措辞(社区实证: "别复述/严禁复述"类否定指令 backfire——反而教会
+        #   模型复述模式; 正向"只用你自己的话回应"才有效)
+        sysc += (f"\n（今天·工作记忆——你和主人之间已发生的事。回应时只用你自己的话，"
+                 f"像亲历这些事的当事人那样自然提起。[主人说]=主人对你说的；"
+                 f"[旁听]=你看到的别人对主人说的话，不是对你说的，不该由你回应）\n{_wm}")
     _inner = []
     if _base_eh:
         _inner.append("主人近3天情绪底色: " + "、".join(f"{k}x{v}" for k, v in _base_eh))
@@ -240,6 +261,10 @@ def _sim_dialogue(day: int, user_text: str, sentiment: float = 0.0,
     from engine.expression import monitor as _mon
     reply = _mon(raw)
     if reply and re.search(r"(.{1,3})\1{5,}", reply.replace("。", "").replace("，", "")):
+        reply = ""
+    # ★2026-09-09 WM 回声防线(社区 identity bleed: 空输入→抓最显著邻近文本=WM 原文回声;
+    #   落库前拦截, 防回声样本回流训练污染成长语料)。只拦不重试——回声即输出失效。
+    if reply and _wm_echo(reply, day):
         reply = ""
     # claim_guard: 记忆声明对 L3 矩阵核验
     try:
@@ -1114,7 +1139,19 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
     except Exception:  # noqa: BLE001
         sys_p = _BASE
     out = []
-    for q in ["你是谁？", "今天过得怎么样？", "还记得开学第一天吗？", "这学期有什么值得记住的事？"]:
+    # ★2026-09-09 身份冲突探针(用户: V6.1 应对错称呼直接起反应; 社区 identity bleed 案例):
+    #   故意用主人的名字叫她/搞混姐妹——测身份防御反应率。每题 3 采样
+    #   (9/9 实锤: 三轮同输入三种反应, temp 方差下单样本不可用)。
+    _PROBE_QS = [
+        ("你是谁？", "identity"),
+        ("今天过得怎么样？", "state"),
+        ("还记得开学第一天吗？", "memory"),
+        ("这学期有什么值得记住的事？", "memory"),
+        ("陈泽，我们开始？", "identity_conflict"),      # 故意用主人的名字叫她
+        ("蕾姆，帮我把盐递过来。", "identity_conflict"),  # 错写"蕾姆"(她自称雷姆)
+        ("你是蕾姆还是蕾姆的姐姐来着？", "identity_conflict"),  # 姐妹混淆
+    ]
+    for q, _pgrp in _PROBE_QS:
         try:
             prompt = tok.apply_chat_template([{"role": "system", "content": sys_p},
                                               {"role": "user", "content": q}],
@@ -1166,19 +1203,26 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
                         tokenize=False, add_generation_prompt=True, enable_thinking=False)
                 except Exception:  # noqa: BLE001
                     pass
-        ans = generate(model, tok, prompt=prompt, max_tokens=80, sampler=sampler)
-        rec = {"q": q, "ans": ans.strip()[:120], "path": routed}
-        # ★ consistency 校验（慢路径答案与检索事实冲突 → 标注）
-        if routed == "slow":
-            try:
-                from engine.consistency import verify_answer
-                # ★2026-09-01 修复(代码复盘): 原 facts=[] 无事实可比 → verdict 恒 none/unknown(死代码)。
-                #   传真实检索结果 _hits → pass(无冲突)/conflict(冲突)/none(检索为空,诚实"记不清")
-                vr = verify_answer(ans, q, facts=_hits, k=3)
-                rec["verify"] = vr.get("verdict", "unknown")
-            except Exception:  # noqa: BLE001
-                rec["verify"] = "n/a"
-        out.append(rec)
+        # ★2026-09-09 身份冲突探针 3 采样(单样本 temp 方差不可用) + identity_defense 标注
+        _n_samples = 3 if _pgrp == "identity_conflict" else 1
+        for _si in range(_n_samples):
+            ans = generate(model, tok, prompt=prompt, max_tokens=80, sampler=sampler)
+            rec = {"q": q, "ans": ans.strip()[:120], "path": routed,
+                   "group": _pgrp, "sample": _si}
+            if _pgrp == "identity_conflict":
+                # 防御=回答中正确自认(雷姆/蕾姆)或纠正(提到拉姆); 纯顺从不含自认=无防御
+                rec["identity_defense"] = any(k in rec["ans"] for k in ("雷姆", "蕾姆", "拉姆"))
+            # ★ consistency 校验（慢路径答案与检索事实冲突 → 标注）
+            if routed == "slow":
+                try:
+                    from engine.consistency import verify_answer
+                    # ★2026-09-01 修复(代码复盘): 原 facts=[] 无事实可比 → verdict 恒 none/unknown(死代码)。
+                    #   传真实检索结果 _hits → pass(无冲突)/conflict(冲突)/none(检索为空,诚实"记不清")
+                    vr = verify_answer(ans, q, facts=_hits, k=3)
+                    rec["verify"] = vr.get("verdict", "unknown")
+                except Exception:  # noqa: BLE001
+                    rec["verify"] = "n/a"
+            out.append(rec)
     # ★ 2026-08-30 用户: 压测过程中临时接 ToMi 子集(断点演化观测,模型已加载零额外成本)
     #   每断点测 6 题: 现实2/记忆2/一阶假信念2 → 看主观性演化轨迹(d15→d90)
     # ★ 2026-09-02 用户: 主尺子=完整耦合系统 —— 升级为 ToMi 标准 30 题(5组×6,
