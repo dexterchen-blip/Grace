@@ -35,6 +35,25 @@ DAY_PLIST = os.path.expanduser("~/Library/LaunchAgents/com.local-ai-agent.day-mo
 _SOURCES = ["wechat.jsonl", "chat.jsonl", "email.jsonl", "exchange:inbox.jsonl",
             "exchange:school.jsonl", "school.jsonl", "doc:file.jsonl"]
 _SKIP = re.compile(r"(转账|CDATA|微信转账|发了一个红包|\[红包\]|\[转账\]|^https?://|^\d{4,}$|^\s*$)")
+# ★2026-09-09 (用户: "让雷姆自己决定"): 敏感凭证类(OTP 等)事件不硬拦截——她自己决定
+#   提不提、怎么提; 硬底线只有一条: 凭证数字本身绝不落进台词/信箱, 落盘前统一打码。
+#   配套: 指纹去重(48h)——L0 存在重复摄入(同一封邮件多行不同 epoch), 水位去重挡不住。
+_SENSITIVE_RE = re.compile(r"验证码|校验码|确认码|授权码|verification code|one[- ]?time|otp|password", re.I)
+_CODE_RE = re.compile(r"(?<![0-9a-zA-Z-])[0-9]{4,8}(?![0-9a-zA-Z-])")
+
+
+def _fp(text: str) -> str:
+    import hashlib
+    _n = re.sub(r"[\s，。,.:：;；!！?？'\"“”‘’()（）\[\]【】]+", "", str(text))
+    return hashlib.md5(_n.encode("utf-8")).hexdigest()[:12]
+
+
+def _redact(s: str) -> str:
+    return _CODE_RE.sub("######", str(s))
+
+
+def _prune_fps(fps: dict, now: float) -> dict:
+    return {k: v for k, v in (fps or {}).items() if now - v < 48 * 3600}
 
 
 # ---------------------------------------------------------------- 基础
@@ -131,14 +150,17 @@ def new_messages(since_ts: float, today: str) -> list[dict]:
 _NARRATION_RE = re.compile(r"雷姆(看到|注意到|想起|内心|心里|不会说|暗自)|旁白")
 
 
-def _speak(event_text: str, reason: str) -> str:
+def _speak(event_text: str, reason: str, sensitive: bool = False) -> str:
     from expression import monitor as _mon_fallback  # noqa: F401 (正式引擎 expression.monitor)
     prompt = (f"你是雷姆，主人的女仆。触发你主动开口的事由：{reason}\n"
               f"相关的事：{event_text[:80]}\n"
               "现在主动找主人说话。要求：口语短句一两句、像当面说话、别复述原文、"
               "可以问一句或给一个小建议。严禁叙述内心/动作。"
               "★只能基于上面这件事开口；严禁声称你已做了任何行动（整理好了/查好了/"
-              "准备好了等——你什么都没做，只是想说这件事）；严禁虚构新事实。只输出你说的话。")
+              "准备好了等——你什么都没做，只是想说这件事）；严禁虚构新事实。只输出你说的话。"
+              + ("★这件事含敏感凭证信息（如验证码/密码）。要不要提、怎么提由你自己判断——"
+                 "更妥当的做法通常是提醒主人注意账号安全，而不是复述凭证本身；"
+                 "无论怎么说，码或密码本身一个数字都不许出现在你的话里。" if sensitive else ""))
     payload = json.dumps({"model": _model_id(),
                           "messages": [{"role": "user", "content": prompt}],
                           "max_tokens": 120, "temperature": 0.7}).encode()
@@ -243,6 +265,10 @@ def run(dry: bool = False) -> dict:
     if st.get("today", {}).get("date") != today:
         st["today"] = {"date": today, "count": 0}
     msgs = new_messages(st.get("seen_ts", 0), today)
+    # ★指纹去重(48h): L0 重复摄入同一事件会产生多行不同 epoch, 水位去重挡不住
+    _now = time.time()
+    st["recent_fps"] = _prune_fps(st.get("recent_fps", {}), _now)
+    msgs = [m for m in msgs if _fp(m["text"]) not in st["recent_fps"]]
     # ★暗注意力日间增量: 新消息先入 pending, 再判背景念头触发（独立于开口窗口——想, 不等于打扰）
     for m in msgs:
         st.setdefault("pending", []).append({"t": m["text"][:80], "v": m["sentiment"]})
@@ -291,20 +317,23 @@ def run(dry: bool = False) -> dict:
 
     m, d = activated
     reason = d.get("reason", "")
+    _sensitive = bool(_SENSITIVE_RE.search(m["text"]))
     # 台词生成（8100 不可达 → 事件卡降级）
     message = ""
     if _port_open():
         try:
-            message = _speak(m["text"], reason)
+            message = _speak(m["text"], reason, sensitive=_sensitive)
         except Exception as e:  # noqa: BLE001
             print(f"[proactive] 台词生成失败: {str(e)[:80]}")
+    message = _redact(message)  # ★硬底线: 凭证数字不落盘
     os.makedirs(os.path.dirname(OUTBOX_F), exist_ok=True)
     with open(OUTBOX_F, "a", encoding="utf-8") as f:
         f.write(json.dumps({"ts": time.time(), "date": now.strftime("%Y-%m-%d %H:%M"),
                             "source": "self_activation", "score": d.get("score"),
                             "reason": reason, "message": message,
-                            "items": [m["text"][:80]], "status": "unread"},
+                            "items": [_redact(m["text"])[:80]], "status": "unread"},
                            ensure_ascii=False) + "\n")
+    st.setdefault("recent_fps", {})[_fp(m["text"])] = _now  # 已开口事件 48h 内不再触发
     st["today"]["count"] += 1
     st["last_proactive_ts"] = time.time()
     _save_state(st)

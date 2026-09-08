@@ -15,6 +15,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import config
 import json
+import re
 import subprocess
 import time
 from datetime import datetime
@@ -22,6 +23,28 @@ from datetime import datetime
 SIGNAL_FILE = os.path.join(os.environ.get('AIAGENT_EXCHANGE_DAYTIME', os.path.join(config.EXCHANGE, '.daytime')), 'sentinel-signal.json')
 HANDLED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wake_handled.json")
 DAY_PLIST = os.path.expanduser('~/Library/LaunchAgents/com.local-ai-agent.day-model.plist')
+
+# ★2026-09-09 (用户: 重复推送 3×验证码 + "让雷姆自己决定"):
+#   ① 指纹去重——同一事件行 48h 内只唤醒一次(L0 重复摄入同一封邮件会产生新 ts 的同文信号,
+#      信号级 ts 去重挡不住; 机制层去重属机制设计, 内容判断仍交给雷姆)。
+#   ② 敏感凭证类(OTP 等)不硬拦截事件——她自己决定提不提、怎么提; 硬底线只有一条:
+#      码本身(4-8 位数字)绝不落进台词/账本/告警, 落盘前统一打码。
+_SENSITIVE_RE = re.compile(r"验证码|校验码|确认码|授权码|verification code|one[- ]?time|otp|password", re.I)
+_CODE_RE = re.compile(r"(?<![0-9a-zA-Z-])[0-9]{4,8}(?![0-9a-zA-Z-])")
+
+
+def _fp(line: str) -> str:
+    import hashlib
+    _n = re.sub(r"[\s，。,.:：;；!！?？'\"“”‘’()（）\[\]【】]+", "", str(line))
+    return hashlib.md5(_n.encode("utf-8")).hexdigest()[:12]
+
+
+def _redact(s: str) -> str:
+    return _CODE_RE.sub("######", str(s))
+
+
+def _prune_fps(fps: dict, now: float) -> dict:
+    return {k: v for k, v in (fps or {}).items() if now - v < 48 * 3600}
 
 
 def _port_open(port: int = 8100) -> bool:
@@ -68,18 +91,30 @@ def main():
     if not urgent:
         print("无紧急项,不唤醒")
         return
+    _now = time.time()
+    _seen_fps = _prune_fps(handled.get("fps", {}), _now)
+    # ★指纹去重: 同一事件行 48h 内已唤醒过 → 丢弃(防 L0 重复摄入引发的重复唤醒)
+    _fresh = [u for u in urgent if _fp(u.get("line", "")) not in _seen_fps]
+    if not _fresh:
+        print(f"全部 {len(urgent)} 项均为 48h 内已唤醒过的重复事件,跳过")
+        handled["fps"] = _seen_fps
+        json.dump(handled, open(HANDLED_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        return
     # 5B 确认: 只对 5b=="需要" 或未知 的紧急项唤醒(5b=="不需要" 降级)
-    wake_items = [u for u in urgent if u.get("5b", "未知") != "不需要"]
+    wake_items = [u for u in _fresh if u.get("5b", "未知") != "不需要"]
     if not wake_items:
         print("5B 判定均为'不需要',不唤醒")
         return
-    body = "；".join(u["line"][:40] for u in wake_items[:3])
+    _sensitive = any(_SENSITIVE_RE.search(u.get("line", "")) for u in wake_items)
+    body = "；".join(_redact(u["line"][:40]) for u in wake_items[:3])
     _notify("🔴 Grace 哨兵: 有紧急事项", body[:80])
     status = _start_27b()
-    # 标记已处理
-    json.dump({"last_ts": sig["ts"], "wake_time": time.time(),
+    # 标记已处理(含事件指纹)
+    _seen_fps.update({_fp(u.get("line", "")): _now for u in wake_items})
+    json.dump({"last_ts": sig["ts"], "wake_time": _now,
                "items": [u["line"][:60] for u in wake_items[:5]],
-               "27b": status}, open(HANDLED_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+               "fps": _seen_fps, "27b": status},
+              open(HANDLED_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     # ★2026-09-07 (用户: 自唤醒 27B 的话回复应该在面板上显示): 唤醒事件落正式系统两处——
     #   ① exchange/shared/alerts/ 告警 JSON → dashboard 首页 ⚠Urgent 面板红点
     #   ② exchange/grace/wake-events.jsonl 结构化账本 → /mind 自唤醒链面板完整回放
@@ -93,7 +128,7 @@ def main():
         _alert_id = f"grace-wake-{_dt.strftime('%Y%m%d%H%M%S')}"
         json.dump({"id": _alert_id, "source": "Grace 自唤醒", "file": "(sentinel 紧急项)",
                    "snippet": body[:200], "detected_at": _dt.strftime("%Y-%m-%d %H:%M:%S"),
-                   "status": "new", "items": [u["line"][:100] for u in wake_items[:5]],
+                   "status": "new", "items": [_redact(u["line"])[:100] for u in wake_items[:5]],
                    "verdicts": [u.get("5b", "?") for u in wake_items[:5]]},
                   open(os.path.join(_alerts, _alert_id + ".json"), "w", encoding="utf-8"),
                   ensure_ascii=False, indent=1)
@@ -103,7 +138,7 @@ def main():
         with open(_ev, "a", encoding="utf-8") as f:
             f.write(json.dumps({"ts": time.time(), "date": _dt.strftime("%Y-%m-%d %H:%M"),
                                 "count": len(wake_items), "status_27b": status,
-                                "items": [{"line": u["line"][:100], "level": u.get("level"),
+                                "items": [{"line": _redact(u["line"])[:100], "level": u.get("level"),
                                            "5b": u.get("5b", "?")} for u in wake_items[:5]]},
                                ensure_ascii=False) + "\n")
         print(f"  唤醒事件已落面板: {_alert_id}")
@@ -115,7 +150,10 @@ def main():
             _pp = ("你是雷姆，主人的女仆。你刚注意到这些紧急事项：" + _items_txt +
                    "\n现在主动开口跟主人说这件事。要求：口语短句、像当面说话、一两句、"
                    "别念清单原文（用你自己的话说重点）、提一句你会跟进。"
-                   "严禁叙述内心/动作描写。只输出你说的话本身。")
+                   "严禁叙述内心/动作描写。只输出你说的话本身。"
+                   + ("★这些事项里含敏感凭证信息（如验证码）。要不要提、怎么提由你自己判断——"
+                      "更妥当的做法通常是提醒主人注意邮箱/账号安全，而不是复述凭证本身；"
+                      "无论怎么说，码或密码本身一个数字都不许出现在你的话里。" if _sensitive else ""))
             try:  # ★模型时间复用: id 偏好选择(27B 优先, v61 兜底)
                 with _ur.urlopen("http://127.0.0.1:8100/v1/models", timeout=5) as _mr:
                     _ids = [m["id"] for m in json.loads(_mr.read())["data"]]
@@ -131,12 +169,13 @@ def main():
             with _ur.urlopen(_req, timeout=90) as _resp:
                 _out = json.loads(_resp.read().decode("utf-8", "replace"))
             _msg = ((_out.get("choices") or [{}])[0].get("message", {}).get("content", "") or "").strip().split("\n")[0][:120]
+            _msg = _redact(_msg)  # ★硬底线: 凭证数字不落盘
             _ob = os.path.join(_formal_exchange, "grace", "proactive-outbox.jsonl")
             os.makedirs(os.path.dirname(_ob), exist_ok=True)
             with open(_ob, "a", encoding="utf-8") as f:
                 f.write(json.dumps({"ts": time.time(), "date": _dt.strftime("%Y-%m-%d %H:%M"),
                                     "source": "wake", "message": _msg,
-                                    "items": [u["line"][:80] for u in wake_items[:3]],
+                                    "items": [_redact(u["line"])[:80] for u in wake_items[:3]],
                                     "status": "unread"}, ensure_ascii=False) + "\n")
             print(f"  雷姆主动消息已入信箱: {_msg[:44]}")
         except Exception as e:  # noqa: BLE001 —— 台词生成失败不影响事件落账(页面会以事件卡显示)
