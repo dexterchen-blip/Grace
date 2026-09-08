@@ -204,28 +204,35 @@ def _inner_world() -> str:
         # ★2026-09-08 修正(用户: "设计时就考虑了每日+长期情绪"): 用 mood_engine.combined_emotion
         #   三层融合读(长期锚点0.6x趋势+0.4x人格底色 / 日级 / 日内衰减), 替代此前的 raw mood_states
         #   懒读——设计的多时间尺度本来就在, 是接线没用上。
+        #   ★2026-09-09 KV 分层: 内部块按变化频率升序发射(越稳越靠前)——
+        #   底色(3天窗) → 趋势(7天) → hidden(≥3h) → 心态轨(分钟级), 保住公共前缀。
         me = _engine_mod("mood_engine")
+        _mood_line, _trend_line = "", ""
         if me is not None:
             ce = me.combined_emotion(db=os.path.join(REPO, "memory", "L2_semantic", "l2.db"))
-            parts.append(f"你此刻的心态: {ce.get('label')}({ce.get('combined'):.2f}) "
-                         f"[三层: 长期锚{ce.get('anchor')}/日级{ce.get('daily')}"
-                         f"/日内{ce.get('intraday')}#{ce.get('layer')}] - 让它自然渗进语气")
+            _mood_line = (f"你此刻的心态: {ce.get('label')}({ce.get('combined'):.2f}) "
+                          f"[三层: 长期锚{ce.get('anchor')}/日级{ce.get('daily')}"
+                          f"/日内{ce.get('intraday')}#{ce.get('layer')}] - 让它自然渗进语气")
             tr = ce.get("trend_direction")
             if tr and tr != "stable":
-                parts.append(f"你近7天心态趋势: {tr}")
+                _trend_line = f"你近7天心态趋势: {tr}"
+        eh = con.execute("SELECT mood_label, COUNT(*) FROM mood_graph WHERE edge_type='emotion' "
+                         "AND ts > strftime('%s','now','-3 days') GROUP BY mood_label "
+                         "ORDER BY 2 DESC LIMIT 3").fetchall()
+        if eh:
+            parts.append("主人近3天情绪底色: " + "、".join(f"{k}x{v}" for k, v in eh)
+                         + " (读他消息时参考, 别算旧账)")
+        if _trend_line:
+            parts.append(_trend_line)
         hs = con.execute("SELECT source FROM mood_graph WHERE edge_type='hidden' "
                          "ORDER BY ts DESC LIMIT 2").fetchall()
         for r in hs:
             th = _snip(r[0])
             if th:
                 parts.append(f"你心里挂着的念头: {th} (影响语气, 不要说出)")
-        eh = con.execute("SELECT mood_label, COUNT(*) FROM mood_graph WHERE edge_type='emotion' "
-                         "AND ts > strftime('%s','now','-3 days') GROUP BY mood_label "
-                         "ORDER BY 2 DESC LIMIT 3").fetchall()
         con.close()
-        if eh:
-            parts.append("主人近3天情绪底色: " + "、".join(f"{k}x{v}" for k, v in eh)
-                         + " (读他消息时参考, 别算旧账)")
+        if _mood_line:
+            parts.append(_mood_line)
     except Exception:  # noqa: BLE001
         pass
     return ("\n".join(parts)) if parts else ""
@@ -252,16 +259,45 @@ def _l3_memory(user_text: str) -> str:
         return ""
 
 
+def _day_memory() -> str:
+    """★2026-09-09 KV Tier 1 · 当日工作记忆（用户: "一天的数据融进 KV, 睡眠处理完清空"）。
+    读 proactive_watch 10min 节拍写的 day-memory.json 快照（当日事件滚动摘要, cap 24 条）。
+    只读不扫 L0（保证两次调用之间字节稳定→前缀可复用）；隔日自动失效=睡眠巩固后的清空语义。"""
+    try:
+        d = json.load(open(os.path.join(REPO, "exchange", "grace", "day-memory.json"),
+                           encoding="utf-8"))
+        if d.get("date") != time.strftime("%Y-%m-%d"):
+            return ""
+        return d.get("digest", "")[:1200]
+    except Exception:  # noqa: BLE001 —— 无快照=无工作记忆, 不影响对话
+        return ""
+
+
 def grace_system_prompt(user_text: str) -> str:
-    mem = _l3_memory(user_text)
-    l2 = _l2_search(user_text)
+    """★2026-09-09 KV 分层重排（用户批准"全部升级"）：
+    T0 恒定(persona+表达约束) → T1 日内(inner_world 升序 + 当日工作记忆) → T2 每消息动态。
+    旧顺序把每调用都变的时间戳插在 persona 后=最长公共前缀秒断, cache 命中率≈0。"""
+    # T1: 内部状态块(inner_world 内部已按变化频率升序) + 当日工作记忆
+    #     工作记忆放内心世界之前——它由 10min 快照节拍更新, 比心态轨更稳
+    day = _day_memory()
     inner = _inner_world()
-    base = f"{_REM_PERSONA}\n\n{_EXPRESS_RULES}\n（认知状态参考）\n{_light_state(user_text)}"
+    base = f"{_REM_PERSONA}\n\n{_EXPRESS_RULES}"
+    if day:
+        base += f"\n（今天·工作记忆——你和主人之间已经发生的事, 要点式, 自然记得但别逐条复述）\n{day}"
     if inner:
         base += f"\n（内心世界·实时）\n{inner}"
+    # T2: 每消息动态（时间/消息情绪/检索/自传切片）
+    t2 = []
+    ls = _light_state(user_text)
+    if ls:
+        t2.append(ls)
+    l2 = _l2_search(user_text)
     if l2:
-        base += f"\n{l2}"
-    return base + (f"\n{mem}" if mem else "")
+        t2.append(l2)
+    mem = _l3_memory(user_text)
+    if mem:
+        t2.append(mem)
+    return base + (("\n" + "\n".join(t2)) if t2 else "")
 
 
 # ---------------------------------------------------------------- 生成 + 监控

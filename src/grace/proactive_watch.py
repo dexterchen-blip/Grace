@@ -269,6 +269,21 @@ def run(dry: bool = False) -> dict:
     _now = time.time()
     st["recent_fps"] = _prune_fps(st.get("recent_fps", {}), _now)
     msgs = [m for m in msgs if _fp(m["text"]) not in st["recent_fps"]]
+    # ★当日工作记忆快照(2026-09-09 用户"一天的数据融进 KV"): 10min 节拍把当日事件滚动
+    #   摘要落盘 day-memory.json → /grace 读快照进 KV Tier1; 隔日 date 翻转自动清空(睡眠语义)。
+    if st.get("day_date") != today:
+        st["day_date"] = today
+        st["day_events"] = []
+    for m in msgs:
+        st.setdefault("day_events", []).append({"t": m["text"][:48]})
+    st["day_events"] = st.get("day_events", [])[-24:]
+    try:
+        json.dump({"date": today,
+                   "digest": "\n".join(f"· {e['t']}" for e in st.get("day_events", []))},
+                  open(os.path.join(config.EXPERIMENTS, "day-memory.json"), "w",
+                       encoding="utf-8"), ensure_ascii=False, indent=1)
+    except Exception:  # noqa: BLE001
+        pass
     # ★暗注意力日间增量: 新消息先入 pending, 再判背景念头触发（独立于开口窗口——想, 不等于打扰）
     for m in msgs:
         st.setdefault("pending", []).append({"t": m["text"][:80], "v": m["sentiment"]})
