@@ -150,7 +150,7 @@ def new_messages(since_ts: float, today: str) -> list[dict]:
 _NARRATION_RE = re.compile(r"雷姆(看到|注意到|想起|内心|心里|不会说|暗自)|旁白")
 
 
-def _speak(event_text: str, reason: str, sensitive: bool = False) -> str:
+def _speak(event_text: str, reason: str, sensitive: bool = False, extra: str = "") -> str:
     from expression import monitor as _mon_fallback  # noqa: F401 (正式引擎 expression.monitor)
     prompt = (f"你是雷姆，主人的女仆。触发你主动开口的事由：{reason}\n"
               f"相关的事：{event_text[:80]}\n"
@@ -158,6 +158,7 @@ def _speak(event_text: str, reason: str, sensitive: bool = False) -> str:
               "可以问一句或给一个小建议。严禁叙述内心/动作。"
               "★只能基于上面这件事开口；严禁声称你已做了任何行动（整理好了/查好了/"
               "准备好了等——你什么都没做，只是想说这件事）；严禁虚构新事实。只输出你说的话。"
+              + (extra + "\n" if extra else "")
               + ("★这件事含敏感凭证信息（如验证码/密码）。要不要提、怎么提由你自己判断——"
                  "更妥当的做法通常是提醒主人注意账号安全，而不是复述凭证本身；"
                  "无论怎么说，码或密码本身一个数字都不许出现在你的话里。" if sensitive else ""))
@@ -346,7 +347,18 @@ def run(dry: bool = False) -> dict:
                     _reason = ("好奇心——有个你一直没弄明白的问题，坦白说记不清，想请主人讲讲"
                                if _track == "D" else
                                "好奇心——你对这事有点兴趣，想听主人聊聊")
-                    _msg = _speak(_g["text"], _reason)
+                    # ★V2.4 锚点层风格参照: 原著雷姆疑问台词随机 2 条做语气 few-shot
+                    #   （rem_v2_full 提取 325 条，锚点层数据——只做语气示例，非输出模板）
+                    import random as _rnd
+                    try:
+                        _anchors = [l.strip() for l in open(
+                            os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         "curiosity-style-anchors.txt"), encoding="utf-8") if l.strip()]
+                        _ex = _rnd.sample(_anchors, 2) if len(_anchors) >= 2 else _anchors
+                        _ex_txt = "\n".join(f"（雷姆当年会这样说：{a}）" for a in _ex)
+                    except Exception:
+                        _ex_txt = ""
+                    _msg = _speak(_g["text"], _reason, extra=_ex_txt)
                     _msg = _redact(_msg)
                     if _msg:
                         os.makedirs(os.path.dirname(OUTBOX_F), exist_ok=True)
