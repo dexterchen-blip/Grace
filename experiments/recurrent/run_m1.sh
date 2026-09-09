@@ -3,7 +3,7 @@
 # 用户指令(2026-09-09): "现在开始训就行不用等到晚上; 沙盒试验成功达成试验目的后再接正式系统"
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$(cd "$HERE/../../.." && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"   # experiments/recurrent → 上两级 = ai-sandbox-stress
 PY="$ROOT/.venv/bin/python3"
 MODEL="/Users/cz/WorkBuddy/watch/rem-v6-lora/models/fused-rem-v61"
 DATA="$HERE/../lora/datasets/organ-m1"
@@ -48,7 +48,7 @@ if [ $tr -ne 0 ] || [ ! -f "$ADAPTER/adapters.safetensors" ]; then
 fi
 
 echo "[M1] 三关评测(记法阅读力/行为/能力):"
-HF_HUB_OFFLINE=1 "$PY" "$HERE/eval_m1.py"
+HF_HUB_OFFLINE=1 "$PY" "$HERE/../lora/eval_m1.py"
 ev=$?
 echo "[M1] 评测退出码: $ev"
 exit $ev
