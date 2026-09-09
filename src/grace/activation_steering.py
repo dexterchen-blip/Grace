@@ -21,6 +21,20 @@ import os
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 VEC_PATH = os.path.join(REPO, "exchange", "grace", "steering-vectors.jsonl")
 
+# ★§13 KV 双轴·层轴（2026-09-09 用户："给不同的模型层加不同的 KV"）：
+#   器官状态按层位注入——慢变量（persona/mood 底色）进早层、快变量（wm/gap）进
+#   中段循环层、表达整形（语气/称呼/ToM 微调）进后段。与脑的时间尺度分层同构。
+#   层位以 Qwen3.8-27B（64 层，架构族 qwen3_5）为基准；R 线循环段=[32,36)。
+LAYER_BANDS = {"early": (1, 24), "loop": (32, 36), "late": (48, 64)}
+
+
+def band_layers(band: str, n_layers: int = 64) -> list:
+    """层带 → 层索引列表。band ∈ {early, loop, late}；越界自动夹取。"""
+    if band not in LAYER_BANDS:
+        raise ValueError(f"未知层带: {band}（可选 {list(LAYER_BANDS)}）")
+    lo, hi = LAYER_BANDS[band]
+    return [i for i in range(max(0, lo), min(hi, n_layers))]
+
 
 def collect_pairs(journal_path: str, state_key: str, lo: float, hi: float) -> list:
     """从轨迹日志采集对比对：(高状态情境隐状态, 低状态情境隐状态)。
@@ -60,25 +74,39 @@ def steering_vector(pos: list, neg: list) -> list:
     return [round(float(x) / norm, 6) for x in v]
 
 
-def apply_steering(hidden_states, vector, alpha: float = 1.0):
+def apply_steering(hidden_states, vector, alpha: float = 1.0, layers: list | None = None):
     """推理时注入：hidden += alpha × vector（逐 token 广播）。
+
+    layers: ★§13 层位选择。None=全部层；传层索引列表（如 band_layers("early")）
+    则只注入指定层——器官更新频率与层位绑定的实现点。
 
     进程内用法（夜班生成器接线点）：
         hs = model(inputs)            # mlx 调用前 hook 每层残差流
-        hs = apply_steering(hs, vec["vector"], alpha=0.8)
+        hs = apply_steering(hs, vec["vector"], alpha=0.8, layers=vec.get("layers"))
     """
     import numpy as np
     v = np.array(vector, dtype=np.float32)
-    return [np.asarray(h, dtype=np.float32) + alpha * v for h in hidden_states]
+    if layers is None:
+        return [np.asarray(h, dtype=np.float32) + alpha * v for h in hidden_states]
+    out = []
+    for i, h in enumerate(hidden_states):
+        h = np.asarray(h, dtype=np.float32)
+        if i in layers:
+            h = h + alpha * v
+        out.append(h)
+    return out
 
 
-def save_vector(name: str, vector: list, pairs: int, vec_path: str = VEC_PATH) -> None:
+def save_vector(name: str, vector: list, pairs: int, vec_path: str = VEC_PATH,
+                band: str | None = None) -> None:
+    """★band: 层带名（early/loop/late，§13 层轴）——向量按层位存储。"""
     os.makedirs(os.path.dirname(vec_path), exist_ok=True)
     rows = []
     if os.path.isfile(vec_path):
         rows = [json.loads(l) for l in open(vec_path, encoding="utf-8") if l.strip()]
     rows = [r for r in rows if r.get("name") != name]
     rows.append({"name": name, "vector": vector, "pairs": pairs,
+                 "band": band, "layers": band_layers(band) if band else None,
                  "born_ts": __import__("time").time()})
     with open(vec_path, "w", encoding="utf-8") as f:
         for r in rows:
