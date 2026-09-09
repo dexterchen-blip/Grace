@@ -55,8 +55,9 @@ def _probe_prompt(tokenizer, q: str) -> str:
 def _write_md(r: dict, path: str) -> None:
     lines = ["# R0 框架浓度报告(层表重排 K=1 vs K=2)", ""]
     lines.append(f"- 模型: `{r['model']}`")
-    lines.append(f"- 排布: 段[{r['plan']['start']},{r['plan']['end']}) "
-                 f"×K={r['plan']['k']} → {r['plan']['new_len']} 层位(权重仍 {r['plan']['n_layers']} 层)")
+    _desc = ("自定义矩阵顺序排列" if r["plan"].get("mode") == "custom-permutation"
+             else f"段[{r['plan']['start']},{r['plan']['end']}) ×K={r['plan']['k']}")
+    lines.append(f"- 排布: {_desc} → {r['plan']['new_len']} 层位(权重仍 {r['plan']['n_layers']} 层)")
     lines.append(f"- PPL: K=1 {r['ppl_k1']} → K=2 {r['ppl_k2']}"
                  f"(比值 {r['ppl_ratio']}, 门 ≤ {GATES['ppl_ratio_max']})")
     lines.append(f"- 探针一致: {r['probe_agree']}/{len(PROBES)}(门 ≥ {GATES['probe_agree_min']})")
@@ -83,6 +84,8 @@ def main() -> None:
     ap.add_argument("--end", type=int, default=None)
     ap.add_argument("--k", type=int, default=2)
     ap.add_argument("--out", default=REPORT_JSON)
+    ap.add_argument("--order-json", default=None,
+                    help="自定义层序排列(JSON 数组)——矩阵顺序切换试验")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
@@ -154,9 +157,16 @@ def main() -> None:
     probes1 = run_probes()
     print(f"[R0] K=1 基线完成: PPL={ppl1:.4f}, 探针 {len(probes1)} 条({time.time() - t0:.0f}s)")
 
-    plan = apply_loop(model, a.start, a.end, a.k)
-    print(f"[R0] 层表重排完成: 段[{plan['start']},{plan['end']}) ×K={plan['k']}"
-          f" → {plan['new_len']} 层位; 段内 is_linear={plan['seg_is_linear']}")
+    custom_order = None
+    if a.order_json:
+        with open(a.order_json, encoding="utf-8") as f:
+            custom_order = json.load(f)
+    plan = apply_loop(model, a.start, a.end, a.k, order=custom_order)
+    if plan.get("mode") == "custom-permutation":
+        print(f"[R0] 矩阵顺序切换完成: 自定义排列({plan['new_len']} 层位)")
+    else:
+        print(f"[R0] 层表重排完成: 段[{plan['start']},{plan['end']}) ×K={plan['k']}"
+              f" → {plan['new_len']} 层位; 段内 is_linear={plan['seg_is_linear']}")
 
     t1 = time.time()
     ppl2 = ppl()

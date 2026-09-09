@@ -79,16 +79,32 @@ def _layers_container(model):
     raise AttributeError("找不到 layers 容器（架构路径变化需更新 _layers_container）")
 
 
-def apply_loop(model, start=None, end=None, k: int = 2) -> dict:
+def apply_loop(model, start=None, end=None, k: int = 2, order: list | None = None) -> dict:
     """对已加载模型执行层表重排(原地/内存中; 重新 load 即完全还原)。返回排布报告。
 
-    结构浓度断言内建: 循环段引用同一组层对象(零权重复制), 引用计数与计划一致。
+    两种模式:
+      - 循环(默认): 段[start,end) × K
+      - ★矩阵顺序切换(order=显式排列): 如原生周期交换——架构吸收力/位置敏感度试验
+    结构浓度断言内建: 层对象零复制(引用同一组对象), 引用计数与计划一致。
     """
     inner = _layers_container(model)
     layers = list(inner.layers)
-    plan = plan_loop(len(layers), start, end, k)
-    seg_is_linear = [bool(getattr(l, "is_linear", False))
-                     for l in layers[plan["start"]:plan["end"]]]
+    if order is not None:
+        # ★2026-09-09 用户: "通过切换矩阵顺序试验架构融入"——order 必须是 0..n-1 的
+        #   排列(每层恰好一次), 如周期 [28,32)↔[36,40) 交换
+        if sorted(order) != list(range(len(layers))):
+            raise ValueError("order 必须是 0..n-1 的排列(每个层位恰好一次)")
+        plan = {"n_layers": len(layers), "mode": "custom-permutation",
+                "order": list(order), "new_len": len(order),
+                "start": -1, "end": -1, "k": 1, "seg_len": 0,
+                "weight_bytes_unchanged": True,
+                "front_untouched": order[:1] == [0],
+                "back_untouched": order[-1:] == [len(layers) - 1]}
+        seg_is_linear = []
+    else:
+        plan = plan_loop(len(layers), start, end, k)
+        seg_is_linear = [bool(getattr(l, "is_linear", False))
+                         for l in layers[plan["start"]:plan["end"]]]
     new_layers = [layers[i] for i in plan["order"]]
     inner.layers = new_layers
     # 防御性同步 config 层数字段(make_cache 按层表构建, 此处同步只为兼容读 config 的路径)
