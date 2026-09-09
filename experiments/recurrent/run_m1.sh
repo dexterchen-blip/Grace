@@ -7,7 +7,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"   # experiments/recurrent → 上两级 = ai-s
 PY="$ROOT/.venv/bin/python3"
 MODEL="/Users/cz/WorkBuddy/watch/rem-v6-lora/models/fused-rem-v61"
 DATA="$HERE/../lora/datasets/organ-m1"
-ADAPTER="$HERE/../lora/adapters/organ-m1-v1"
+ADAPTER="${M1_ADAPTER:-$HERE/../lora/adapters/organ-m1-v2}"
 LABEL="com.local-ai-agent.day-model"
 PLIST="$HOME/Library/LaunchAgents/com.local-ai-agent.day-model.plist"
 

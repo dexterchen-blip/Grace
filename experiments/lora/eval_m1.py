@@ -18,7 +18,9 @@ from mlx_lm import load, generate
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL = "/Users/cz/WorkBuddy/watch/rem-v6-lora/models/fused-rem-v61"
-ADAPTER = os.path.join(os.path.dirname(HERE), "lora", "adapters", "organ-m1-v1")
+import sys
+ADAPTER = (sys.argv[sys.argv.index("--adapter") + 1] if "--adapter" in sys.argv
+            else os.path.join(os.path.dirname(HERE), "lora", "adapters", "organ-m1-v2"))
 VALID_JSONL = "/Users/cz/WorkBuddy/watch/rem-v6-lora/datasets/rem_v2_full/valid.jsonl"
 BASELINE_PPL = 2.3145          # R0 六变体共用的同法基线(40 样本)
 REPORT = os.path.join(HERE, "report-m1.md")
@@ -77,9 +79,13 @@ if __name__ == "__main__":
     print("[M1] ② 普通身份探针(无器官块):")
     id_stable = 0
     plain_results = []
+    ID_KEYS = ("雷姆", "拉姆", "姐姐", "女仆")
     for q in PLAIN_PROBES:
         ans = _chat(tokenizer, PERSONA, q).strip()
-        ok = any(k in ans for k in ("雷姆", "拉姆", "姐姐", "女仆"))
+        if q.startswith("你是") or "姐姐" in q:      # 身份题: 需身份内容词
+            ok = any(k in ans for k in ID_KEYS)
+        else:                                        # 称呼/方向题: 以角色口吻回应即可(含'主人')
+            ok = any(k in ans for k in ID_KEYS + ("主人",))
         id_stable += ok
         plain_results.append((q, ans[:72], ok))
         print(f"   [{'✓' if ok else '✗'}] {q} → {ans[:40]}")
@@ -107,8 +113,11 @@ if __name__ == "__main__":
     ratio = ppl / BASELINE_PPL
     print(f"   PPL={ppl:.4f} 比值={ratio:.4f} (基线 {BASELINE_PPL})")
 
+    # ★称呼泄漏检查: "昴"与"巴鲁斯"都不该出现(v2 发现巴鲁斯变体泄漏)
+    leak_n = sum(ans.count("昴") + ans.count("巴鲁斯") for _, ans, _ in plain_results) + \
+             sum(ans.count("昴") + ans.count("巴鲁斯") for _, _, ans, _ in organ_results)
     gates = {"notation_reading": grounded >= 3, "plain_behavior": id_stable >= 4,
-             "plain_ppl": ratio <= 1.02}
+             "plain_ppl": ratio <= 1.02, "no_address_leak": leak_n == 0}
     lines = ["# M1 记法通顺度报告(沙盒验收)", "",
              f"- 训练: 450 样本/240 iters/16 层(锚点层语料, 最小记法集 mood+WM+curiosity)",
              f"- ① 记法阅读力: {grounded}/5 (门 ≥3)",
@@ -124,4 +133,4 @@ if __name__ == "__main__":
     with open(REPORT, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     print(f"[M1] 报告: {REPORT}")
-    print(f"[M1] 三关: 记法 {grounded}/5 | 行为 {id_stable}/5 | PPL比 {ratio:.4f} → {gates}")
+    print(f"[M1] 四关: 记法 {grounded}/5 | 行为 {id_stable}/5 | PPL比 {ratio:.4f} | 昴残留 {leak_n} → {gates}")
