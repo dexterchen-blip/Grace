@@ -41,7 +41,21 @@ SANDBOX = os.environ.get("AIAGENT_SANDBOX", "")
 if SANDBOX:
     KG_STATE = os.path.join(SANDBOX, "memory", "L1_working", "kg_state.json")
 
-TZ_CN = timezone(timedelta(hours=8))
+def _local_tz():
+    """★2026-09-09 时区统一修正：机器已迁 PDT，UTC+8 硬编码全部改本地时区
+    （AIAGENT_TZ 可覆盖，与 night_watch/grace-sleep 同约定）。"""
+    import os as _os
+    name = _os.environ.get("AIAGENT_TZ")
+    if name:
+        try:
+            from zoneinfo import ZoneInfo
+            return ZoneInfo(name)
+        except Exception:
+            pass
+    return datetime.now().astimezone().tzinfo
+
+
+TZ_CN = _local_tz()
 
 GRAPH_SCHEMA = """
 CREATE TABLE IF NOT EXISTS entities(

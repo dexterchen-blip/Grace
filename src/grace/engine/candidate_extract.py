@@ -26,7 +26,21 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))   # v2/（config.py）
 import config  # noqa: E402
 
-_LOCAL_TZ = timezone(timedelta(hours=8))   # Asia/Shanghai（机器时区，与 launchd 任务一致）
+def _local_tz():
+    """★2026-09-09 时区统一修正：机器已迁 PDT，UTC+8 硬编码全部改本地时区
+    （AIAGENT_TZ 可覆盖，与 night_watch/grace-sleep 同约定）。"""
+    import os as _os
+    name = _os.environ.get("AIAGENT_TZ")
+    if name:
+        try:
+            from zoneinfo import ZoneInfo
+            return ZoneInfo(name)
+        except Exception:
+            pass
+    return datetime.now().astimezone().tzinfo
+
+
+_LOCAL_TZ = _local_tz()
 
 
 # ---------- 时间归一化：把记录归到本地日期 ----------

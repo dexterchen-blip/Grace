@@ -373,14 +373,20 @@ class ProposalQueue:
 
 
 def _default_expiry() -> str:
-    """默认过期时间：下一个本地（UTC+8）08:00，转 UTC ISO。
+    """默认过期时间：下一个本地 08:00，转 UTC ISO。
 
     2026-08-20 修复：旧实现在 UTC 时间上直接 replace(hour=0)——本地凌晨
     （00:00-08:00）创建的提案会被算成「本地昨天 08:00」，创建即过期，
     08:00 看门狗立即误移 expired/（夜班 03:00 巩固产生的提案全部中招）。
     现在先在本地时区算「下一个 08:00」，再转 UTC。"""
     import datetime as dt
-    tz8 = dt.timezone(dt.timedelta(hours=8))
+    import os as _os
+    _tzname = _os.environ.get("AIAGENT_TZ")          # ★2026-09-09 本地时区（机器已迁 PDT）
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        tz8 = _ZI(_tzname) if _tzname else dt.datetime.now().astimezone().tzinfo
+    except Exception:
+        tz8 = dt.datetime.now().astimezone().tzinfo
     now_local = dt.datetime.now(tz8)
     target = now_local.replace(hour=8, minute=0, second=0, microsecond=0)
     if now_local.hour >= 8:

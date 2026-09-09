@@ -69,7 +69,21 @@ L2_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # 夜班模型用 llama-cpp venv（有 sqlite_vec + llama_cpp）；摄入用 3.13 管理器
 L2_VENV = "/Users/cz/.workbuddy/binaries/python/envs/llama-cpp/bin/python"
 
-TZ_CN = timezone(timedelta(hours=8))
+def _local_tz():
+    """★2026-09-09 时区统一修正：机器已迁 PDT，UTC+8 硬编码全部改本地时区
+    （AIAGENT_TZ 可覆盖，与 night_watch/grace-sleep 同约定）。"""
+    import os as _os
+    name = _os.environ.get("AIAGENT_TZ")
+    if name:
+        try:
+            from zoneinfo import ZoneInfo
+            return ZoneInfo(name)
+        except Exception:
+            pass
+    return datetime.now().astimezone().tzinfo
+
+
+TZ_CN = _local_tz()
 SEGMENT_TIMEOUT = 600  # 10 min per segment
 
 
