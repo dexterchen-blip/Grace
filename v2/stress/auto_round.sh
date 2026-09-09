@@ -45,6 +45,9 @@ DAY_LIMIT="$DAY_LIMIT" DENSITY="${DENSITY:-1}" GRACE_NO_DIALOGUE="${GRACE_NO_DIA
       --days "'"$DAY_LIMIT"'" --density "'"$DENSITY"'" --train-every 1 --sample-every '"$SAMPLE_EVERY"' --reset-interval 0 --inputs-dir inputs-v3 \
       >> experiments/run/stress/stress.log 2>&1
   RC=$?
+  # ★2026-09-09 测量完整性: judge rule 回退计数——>100 = 本轮 PE 不可信(8100 掉线铁证)
+  _FB=$(grep -c "退回规则版" experiments/run/stress/stress.log 2>/dev/null || echo 0)
+  echo "=== 测量完整性: judge rule 回退 ${_FB} 次（>100 = 本轮 PE 数据不可信, 查 8100）===" >> experiments/run/stress/auto-round.log
   # ④ 结果汇总 append（供共情链校准自动取数）
   .venv/bin/python3 -c "
 import json, os, glob, time

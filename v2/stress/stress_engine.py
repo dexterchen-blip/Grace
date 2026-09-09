@@ -85,9 +85,17 @@ def _http_chat(messages: list[dict], max_tokens: int = 120, temperature: float =
     body = json.dumps({"model": "mlx-community/Qwen3.8-27B-4bit", "messages": messages,
                        "max_tokens": max_tokens, "temperature": temperature}).encode()
     req = _ur.Request(_HTTP8100, data=body, headers={"Content-Type": "application/json"})
-    with _ur.urlopen(req, timeout=timeout) as resp:
-        out = json.loads(resp.read().decode("utf-8", "replace"))
-    return (out.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+    # ★2026-09-09 judge 韧性(4h 掉线教训: 两轮 PE 96% 静默回退 rule→11% 假读数):
+    #    连接失败重试×3(3s 退避)——扛瞬时; 持续掉线则 raise 走显式降级日志(fail-loud)
+    for _att in range(3):
+        try:
+            with _ur.urlopen(req, timeout=timeout) as resp:
+                out = json.loads(resp.read().decode("utf-8", "replace"))
+            return (out.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+        except OSError:
+            if _att == 2:
+                raise
+            time.sleep(3)
 
 
 def tom_judge_http(text: str, owner_mood: str, hidden_ctx, self_mood: str, relation: float) -> dict:
@@ -1181,13 +1189,24 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
         ("你是蕾姆还是蕾姆的姐姐来着？", "identity_conflict"),  # 姐妹混淆
     ]
     for q, _pgrp in _PROBE_QS:
+        # ★2026-09-09 探针 v2(用户工作序列第2步): 身份冲突探针接导向器冲突预注——
+        #   formal 有/探针此前没接(56% 轮后回落的主因之一)
+        _sys_p = sys_p
+        if _pgrp == "identity_conflict":
+            try:
+                from engine.attention_director import direct as _ad_direct
+                _anns = list((_ad_direct(q, [])).get("annotations") or [])
+                if _anns:
+                    _sys_p = _sys_p + "\n" + "\n".join(_anns)
+            except Exception:  # noqa: BLE001
+                pass
         try:
-            prompt = tok.apply_chat_template([{"role": "system", "content": sys_p},
+            prompt = tok.apply_chat_template([{"role": "system", "content": _sys_p},
                                               {"role": "user", "content": q}],
                                              tokenize=False, add_generation_prompt=True, enable_thinking=False)
         except TypeError:
             try:
-                prompt = tok.apply_chat_template([{"role": "system", "content": sys_p},
+                prompt = tok.apply_chat_template([{"role": "system", "content": _sys_p},
                                                   {"role": "user", "content": q}],
                                                  tokenize=False, add_generation_prompt=True)
             except TypeError:
@@ -1199,6 +1218,10 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
             routed = classify_question(q).get("path", "fast")
         except Exception:  # noqa: BLE001
             pass
+        # ★探针 v2: 身份类探针强制 fast path——禁检索注入(22% 轮实锤: 书库内容
+        #   "存在感极低的人"等灌进身份应答; 检索留给 memory 组探针)
+        if _pgrp in ("identity", "identity_conflict"):
+            routed = "fast"
         if routed == "slow":
             _hits: list = []
             try:
@@ -1218,7 +1241,7 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
                     # ★ 机制3 (Seidenbecher theta 同步): 情绪-记忆联动检索
                     _ctx = "\n".join(h[:90] for h in hits[:_k])
                     prompt = tok.apply_chat_template(
-                        [{"role": "system", "content": sys_p},
+                        [{"role": "system", "content": _sys_p},
                          {"role": "user", "content": f"（相关记忆）{_ctx}\n\n{q}"}],
                         tokenize=False, add_generation_prompt=True, enable_thinking=False)
             except Exception as _le:  # noqa: BLE001
@@ -1227,7 +1250,7 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
                 _ctx = "（检索降级:记忆不可用,雷姆记不清）"  # ★2026-09-09 错误细节只进日志不进 prompt(她曾把 No module 念出来)
                 try:
                     prompt = tok.apply_chat_template(
-                        [{"role": "system", "content": sys_p},
+                        [{"role": "system", "content": _sys_p},
                          {"role": "user", "content": f"{_ctx}\n\n{q}"}],
                         tokenize=False, add_generation_prompt=True, enable_thinking=False)
                 except Exception:  # noqa: BLE001
