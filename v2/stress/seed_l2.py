@@ -42,6 +42,27 @@ def main() -> None:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
             n += 1
     print(f"[seed-l2] book.jsonl 重写完成: {n} 源天")
+    # ★2026-09-09 清残留: reset 只清 docs 清不了 vec0 虚拟表（普通连接无 vec 模块）——
+    #   残留 vec 行会让 build 撞 UNIQUE。本进程（llama-cpp venv）能加载 sqlite_vec，负责全清。
+    import sqlite3
+    try:
+        import sqlite_vec
+        db = sqlite3.connect(os.path.join(ROOT, "memory", "L2_semantic", "l2.db"))
+        db.enable_load_extension(True)
+        sqlite_vec.load(db)
+        total = 0
+        for t in ("docs", "doc_entities", "relations", "fts_docs",
+                  "vec_docs", "vec_docs_info", "vec_docs_chunks",
+                  "vec_docs_rowids", "vec_docs_vector_chunks00"):
+            try:
+                cur = db.execute("DELETE FROM " + t)
+                total += cur.rowcount
+            except Exception:
+                pass  # 表不存在——跳过
+        db.commit(); db.close()
+        print("[seed-l2] 语义索引残留清除: %d 行（vec+docs 全清，重建从零）" % total)
+    except Exception as e:
+        print("[seed-l2] 残留清除失败（build 可能撞 UNIQUE）: %s" % e)
 
 
 if __name__ == "__main__":
