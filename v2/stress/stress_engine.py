@@ -286,7 +286,26 @@ def _sim_dialogue(day: int, user_text: str, sentiment: float = 0.0,
     except Exception:  # noqa: BLE001
         pass
     if not reply:
+        # ★V2.4 好奇心 G2: 被过滤的回复若含"记不清"信号 → 缺口入账
+        if os.environ.get("GRACE_CURIOSITY") == "1":
+            try:
+                from engine.curiosity import record_gap as _rg
+                if re.search("记不清|不记得|不知道", raw):
+                    _rg(os.path.join(STRESS_ROOT, "curiosity-ledger.jsonl"),
+                        text="主人问「%s」雷姆记不清" % user_text[:30], track="D", conf=0.5,
+                        cues=[user_text[:40]], next_step="下次自然地问主人")
+            except Exception:
+                pass
         return {"status": "filtered"}
+    # ★V2.4 G1: 实质性消息但书库检索无命中 → 缺口入账（低置信谷底, 重现后升级）
+    if os.environ.get("GRACE_CURIOSITY") == "1" and len(user_text) >= 8 and not _l2_ctx:
+        try:
+            from engine.curiosity import record_gap as _rg
+            _rg(os.path.join(STRESS_ROOT, "curiosity-ledger.jsonl"),
+                text="主人提到「%s」，书库无相关记忆" % user_text[:36], track="D", conf=0.1,
+                cues=[user_text[:40]], solvable=True)
+        except Exception:
+            pass
     # 落库: L0 mode=rem + 实时图谱边 + 日内拨动(全对齐正式)
     ts_now = day_ts(day, 20)
     try:

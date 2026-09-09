@@ -247,6 +247,20 @@ def _l3_memory(user_text: str) -> str:
         if not mg or not ab:
             return ""
         ent = mg.entity_of(user_text)
+        # ★2026-09-09 V2.4 好奇心器官: G1/G2 缺口入账（GRACE_CURIOSITY 门控，铁律安全——
+        #   缺口全部来自真实运行信号，不人工造）
+        if os.environ.get("GRACE_CURIOSITY", "1") == "1":
+            try:
+                from curiosity import record_gap
+                _cl = os.path.join(REPO, "exchange", "grace", "curiosity-ledger.jsonl")
+                if not ent and _CLAIM_RE.search(user_text):
+                    record_gap(_cl, text="主人问到过去的某事，雷姆记不清细节", track="D",
+                               conf=0.5, cues=[user_text[:40]], next_step="下次自然地问主人")
+                elif ent and not ab.fact_query(ent, db=os.path.join(REPO, "memory", "L3_core", "autobiography.db")):
+                    record_gap(_cl, text=f"主人提到「{ent}」，雷姆没有相关记忆", track="D",
+                               conf=0.1, cues=[user_text[:40]], solvable=True)
+            except Exception:  # noqa: BLE001
+                pass
         if not ent:
             return ""
         facts = ab.fact_query(ent, db=os.path.join(REPO, "memory", "L3_core", "autobiography.db"))
