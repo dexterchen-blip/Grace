@@ -64,12 +64,27 @@ def plan_loop(n_layers: int, start=None, end=None, k: int = 2,
     }
 
 
+def _layers_container(model):
+    """解析持有 .layers 的模块（Qwen3.5 架构: 顶层 Model → .language_model(TextModel)
+    → .model(Qwen3_5TextModel) → .layers；TextModel.make_cache 经 property 委托同一列表）。"""
+    for path in ("language_model.model", "model", ""):
+        obj = model
+        try:
+            for attr in [a for a in path.split(".") if a]:
+                obj = getattr(obj, attr)
+            if hasattr(obj, "layers"):
+                return obj
+        except AttributeError:
+            continue
+    raise AttributeError("找不到 layers 容器（架构路径变化需更新 _layers_container）")
+
+
 def apply_loop(model, start=None, end=None, k: int = 2) -> dict:
     """对已加载模型执行层表重排(原地/内存中; 重新 load 即完全还原)。返回排布报告。
 
     结构浓度断言内建: 循环段引用同一组层对象(零权重复制), 引用计数与计划一致。
     """
-    inner = getattr(model, "model", model)          # 顶层 Model → 内层 Qwen3Model
+    inner = _layers_container(model)
     layers = list(inner.layers)
     plan = plan_loop(len(layers), start, end, k)
     seg_is_linear = [bool(getattr(l, "is_linear", False))

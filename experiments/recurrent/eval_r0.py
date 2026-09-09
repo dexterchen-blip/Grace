@@ -125,9 +125,10 @@ def main() -> None:
             ids = tokenizer.encode(text)[:1024]
             if len(ids) < 8:
                 continue
-            x = mx.array(ids)
-            logits = model(x)
-            loss = nn.losses.cross_entropy(logits[:-1, :], x[1:], reduction="mean")
+            # qwen3_5 层要求 3D (B,S,D): 传 batch 维 [ids], 前向后去 batch
+            logits = model(mx.array([ids]))[0]
+            loss = nn.losses.cross_entropy(logits[:-1, :], mx.array(ids[1:]),
+                                           reduction="mean")
             tot += float(loss)
             cnt += 1
         return tot / max(cnt, 1)
