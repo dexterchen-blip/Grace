@@ -232,13 +232,23 @@ def _sim_dialogue(day: int, user_text: str, sentiment: float = 0.0,
     # ---- 组装: T0 → T1(工作记忆→内心世界) → T2(书库检索) ----
     sysc = persona + "\n\n表达约束：口语短句一两句；心里想的不得直说；" \
         "潜台词说破=失礼；严禁叙述体/动作描写/旁白。"
-    _wm = _wm_digest(day)
-    if _wm:
-        # ★2026-09-09 正向措辞(社区实证: "别复述/严禁复述"类否定指令 backfire——反而教会
-        #   模型复述模式; 正向"只用你自己的话回应"才有效)
+    # ★2026-09-09 注意力导向器(用户: "几层记忆系统应用得好可以形成明确的注意力导向"):
+    #   WM 条目按激活值(新近×显著×焦点关联)分【焦点区/背景区】, 治等权稀释;
+    #   正向措辞保留(社区实证否定指令 backfire); 冲突标注进 sysc 尾部。
+    try:
+        from engine.attention_director import direct as _ad, render_blocks as _rb
+        _d = _ad(user_text, _WM.get(day, []))
+        _blk = _rb(_d)
+        _anns = list(_d.get("annotations") or [])
+    except Exception:  # noqa: BLE001 —— 导向器故障退回平铺
+        _blk = _wm_digest(day)
+        _anns = []
+    if _blk:
         sysc += (f"\n（今天·工作记忆——你和主人之间已发生的事。回应时只用你自己的话，"
                  f"像亲历这些事的当事人那样自然提起。[主人说]=主人对你说的；"
-                 f"[旁听]=你看到的别人对主人说的话，不是对你说的，不该由你回应）\n{_wm}")
+                 f"[旁听]=你看到的别人对主人说的话，不是对你说的，不该由你回应）\n{_blk}")
+    for _an in _anns:
+        sysc += f"\n{_an}"
     _inner = []
     if _base_eh:
         _inner.append("主人近3天情绪底色: " + "、".join(f"{k}x{v}" for k, v in _base_eh))
@@ -282,7 +292,7 @@ def _sim_dialogue(day: int, user_text: str, sentiment: float = 0.0,
     try:
         l0p = os.path.join(config.SB, "memory", "L0_raw", "chat.jsonl")
         os.makedirs(os.path.dirname(l0p), exist_ok=True)
-        json.dump({"mode": "rem", "source": "chat-sim", "ts": time.time(),
+        json.dump({"id": f"chatsim-d{day}-{int(ts_now)}", "mode": "rem", "source": "chat-sim", "ts": time.time(),
                    "payload": {"session": f"stress-d{day}",
                                "messages": [{"role": "user", "text": user_text[:100], "ts": ts_now - 5},
                                             {"role": "assistant", "text": reply, "ts": ts_now}]}},

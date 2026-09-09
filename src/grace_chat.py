@@ -309,10 +309,23 @@ def grace_system_prompt(user_text: str) -> str:
     inner = _inner_world()
     base = f"{_REM_PERSONA}\n\n{_EXPRESS_RULES}"
     if day:
-        # ★正向措辞(社区 identity bleed 实证: "别复述"类否定指令 backfire——反而教出复述
-        #   模式; 正向"只用你自己的话回应"才有效)
-        base += (f"\n（今天·工作记忆——你和主人之间已经发生的事。回应时只用你自己的话，"
-                 f"像亲历这些事的当事人那样自然提起。）\n{day}")
+        # ★2026-09-09 注意力导向器(用户: "几层记忆系统应用得好可以形成明确的注意力导向"):
+        #   WM 条目不再等权平铺——按激活值(新近×显著×焦点关联)分【焦点区/背景区】,
+        #   冲突信号在 T2 预注注意力提示。ACT-R: 记忆激活即注意力。
+        try:
+            from attention_director import direct as _adirect, render_blocks as _render_blocks
+            _entries = [l.strip().lstrip("·•").strip() for l in day.splitlines() if l.strip()]
+            _d = _adirect.direct(user_text, _entries)
+            _blk = _render_blocks(_d)
+            _anns = list(_d.get("annotations") or [])
+        except Exception:  # noqa: BLE001 —— 导向器故障退回平铺(可用性优先)
+            _blk = day
+            _anns = []
+        if _blk:
+            base += (f"\n（今天·工作记忆——你和主人之间已经发生的事。回应时只用你自己的话，"
+                     f"像亲历这些事的当事人那样自然提起。）\n{_blk}")
+    else:
+        _anns = []
     if inner:
         base += f"\n（内心世界·实时）\n{inner}"
     # T2: 每消息动态（时间/消息情绪/检索/自传切片）
@@ -323,9 +336,9 @@ def grace_system_prompt(user_text: str) -> str:
     l2 = _l2_search(user_text)
     if l2:
         t2.append(l2)
-    mem = _l3_memory(user_text)
     if mem:
         t2.append(mem)
+    t2.extend(_anns)  # ★注意力导向: 冲突信号预注(身份/称呼以事实为准)
     return base + (("\n" + "\n".join(t2)) if t2 else "")
 
 
