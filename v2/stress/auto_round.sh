@@ -30,6 +30,10 @@ DAY_LIMIT="$DAY_LIMIT" DENSITY="${DENSITY:-1}" GRACE_NO_DIALOGUE="${GRACE_NO_DIA
   echo "=== auto_round 启动 $(date +%H:%M:%S) | days="'"'"$DAY_LIMIT"'"'" ===" >> experiments/run/stress/auto-round.log
   # ① 归档上一轮
   ./run.sh .venv/bin/python3 v2/stress/reset_stress.py >> experiments/run/stress/auto-round.log 2>&1
+  # ★2026-09-09 V2.4 书库 L2 种子: reset 归档 L0/索引 → 语义检索无料（此前静默降级一周）。
+  #   重播种 book.jsonl + 重建语义索引（同步执行, 每轮一次 ~10 分钟, 检索从此真有料）。
+  HF_HUB_OFFLINE=1 /Users/cz/.workbuddy/binaries/python/envs/llama-cpp/bin/python3 v2/stress/seed_l2.py >> experiments/run/stress/auto-round.log 2>&1
+  HF_HUB_OFFLINE=1 /Users/cz/.workbuddy/binaries/python/envs/llama-cpp/bin/python3 src/l2_semantic.py build >> experiments/run/stress/auto-round.log 2>&1
   # ② ★2026-09-08 8100 全程在线(输入方式对齐正式系统): ToM 判断/judge 重标/cog 重构
   #    全走 8100 独立 27B(认知器官), 压测进程内 V6.1 只管对话人格与训练 subprocess。
   #    内存: 循环期 15.5+15.5=31G / 训练期(_release_model 后) 20.7+15.5=36.2G, 均 <48G。

@@ -336,13 +336,12 @@ def l0_append(texts: list[dict], day: int) -> None:
     l0dir = os.path.join(config.SB, "memory", "L0_raw")
     os.makedirs(l0dir, exist_ok=True)
     ts0 = day_ts(day)
-    replies = _rem_replies()
+    # ★2026-09-09 模板驱动清剿(用户: "不要再放跟之前一样都是模板驱动的"): 移除
+    #   _rem_replies() 台词库罐头回复——assistant 侧回复只能来自 chat-sim 真实生成
+    #   (V6.1 现场输出), L0 里不允许出现任何随机取样台词。
     messages = []
     for i, m in enumerate(texts):
         messages.append({"role": "user", "text": m["text"], "ts": ts0 + i * 60})
-        if replies:
-            messages.append({"role": "assistant", "text": random.choice(replies),
-                             "ts": ts0 + i * 60 + 30})
     rec = {
         "id": f"stress-d{day:03d}",
         "ts": datetime.fromtimestamp(ts0).isoformat(),
