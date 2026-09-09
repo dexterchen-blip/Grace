@@ -1441,6 +1441,27 @@ def main():
                                 #   原来取每组第一条消息——往往是别人说的, 方向过滤器会全拦 → chat-sim 静默空转
                                 next((m.get("text") for m in r.get("messages", []) if m.get("is_send")), None)
                                 for r in _grp) if t]})
+        # ★2026-09-09 合成对话输入(用户: "对话数据你来生成, 书库数据直接用真实的, 加大对话数据量"):
+        #   只生成输入侧(主人话术, 陈泽口吻 grounded 真实话题), 她的回复仍由 V6.1 现场真实
+        #   生成 → 成长语料铁律不破(一切训练样本仍是真实运行产物)。每模拟天 ≤12 条,
+        #   GRACE_SYNTHETIC=1 门控(实验变量, 默认关)。
+        if os.environ.get("GRACE_SYNTHETIC") == "1":
+            _syn_f = os.path.join(os.path.dirname(os.path.abspath(__file__)), "synthetic-dialogue.jsonl")
+            _syn = {}
+            if os.path.isfile(_syn_f):
+                for _l in open(_syn_f, encoding="utf-8"):
+                    try:
+                        _j = json.loads(_l)
+                        _syn.setdefault(int(_j["day"]), []).append(_j["owner"])
+                    except Exception:
+                        continue
+            _n_syn = 0
+            for _md in _merged:
+                _extra = _syn.get(_md["day"], [])[:12]
+                _md["_sim_sources"] = list(_md.get("_sim_sources") or []) + _extra
+                _n_syn += len(_extra)
+            if _n_syn:
+                logln(f"  [synthetic] 注入合成主人话术 {_n_syn} 条(输入侧实验变量, 回复仍为真实生成)")
         files = [None] * len(_merged)          # 占位: 循环改为读 _merged
         _merged_mode = _merged
         logln(f"  [density] ×{_K}: {len(_recs)} 源天 → {len(_merged)} 模拟天"
