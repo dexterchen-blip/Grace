@@ -1930,6 +1930,24 @@ def main():
                                           "relation": round(min(1.0, day / 40.0), 2)})
         except Exception as e:  # noqa: BLE001
             logln(f"  [ToM] day {day} 异常: {e}")
+        # ★V2.4 好奇心 EPISTEMIC 第四源(2026-09-09): 账本 top 缺口 → 主动提问行,
+        #   走断点口语生成管线(27B 现场生成措辞, 非模板); 每缺口一次(attempts 门控)
+        if os.environ.get("GRACE_CURIOSITY") == "1" and day % max(1, args.sample_every) == 0:
+            try:
+                from engine.curiosity import top_gap as _ctg, mark_attempt as _cma
+                _cg = _ctg(os.path.join(STRESS_ROOT, "curiosity-ledger.jsonl"))
+                if _cg and int(_cg.get("attempts", 0)) < 1:
+                    proactive.append({"day": day,
+                                      "situation": "（雷姆想起一个一直没弄明白的问题）" + _cg["text"][:44],
+                                      "message": "", "pending": True,
+                                      "advice": "满足好奇心" if _cg.get("track") == "I" else "坦白记不清，请主人讲讲",
+                                      "emotion": "", "intent": "好奇",
+                                      "owner_mood": owner_mood, "mood": owner_mood,
+                                      "relation": round(min(1.0, day / 40.0), 2)})
+                    _cma(os.path.join(STRESS_ROOT, "curiosity-ledger.jsonl"), _cg["gap_id"])
+                    logln(f"  ↪ EPISTEMIC: 缺口驱动好奇提问(day {day}): {_cg['text'][:36]}")
+            except Exception as _cqe:
+                logln(f"  [curiosity] day {day} 异常: {_cqe}")
         # ★2026-09-01 DMN 自发通道(脑科学: Lieberman 默认模式网络=社会认知引擎):
         #   空闲想起主人——久未主动(≥3天)且当天无主动 → 从 L3 自传体翻出主人的事 → 主动
         #   = 人孤独时翻相册然后发消息(无事件驱动的主动, 治"输入断了就不主动")
