@@ -12,6 +12,8 @@ cd "$(dirname "$0")/../.." || exit 1
 ROOT="$(pwd)"
 DAY_LIMIT=33
 [ "$1" = "--days" ] && DAY_LIMIT="$2"
+[ "$3" = "--sample-every" ] && SAMPLE_EVERY="$4"
+SAMPLE_EVERY="${SAMPLE_EVERY:-11}"
 DENSITY="${DENSITY:-1}"   # ★2026-09-09 fix: L37 '"$DENSITY"' 由本 shell 展开, 必须先在此定默认值
                           #   (原默认只在 L25 env 前缀里 → 未显式传 DENSITY 时 --density 展开为空, 引擎 arg error rc=2)
 
@@ -40,7 +42,7 @@ DAY_LIMIT="$DAY_LIMIT" DENSITY="${DENSITY:-1}" GRACE_NO_DIALOGUE="${GRACE_NO_DIA
   #    (原"停 8100"已废——那是为了训练独占, 现训练前 _release_model 已保证)
   # ③ 跑 33 天轮（EWC-B）
   GRACE_EWC=1 GRACE_SLEEP_DELTA=0.03 ./run.sh .venv/bin/python3 v2/stress/stress_engine.py \
-      --days "'"$DAY_LIMIT"'" --density "'"$DENSITY"'" --train-every 1 --sample-every 11 --reset-interval 0 --inputs-dir inputs-v3 \
+      --days "'"$DAY_LIMIT"'" --density "'"$DENSITY"'" --train-every 1 --sample-every '"$SAMPLE_EVERY"' --reset-interval 0 --inputs-dir inputs-v3 \
       >> experiments/run/stress/stress.log 2>&1
   RC=$?
   # ④ 结果汇总 append（供共情链校准自动取数）
