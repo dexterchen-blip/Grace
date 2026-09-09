@@ -342,10 +342,32 @@ def run(dry: bool = False) -> dict:
 
     activated = None
     max_score = 0.0
+    _cl = os.path.join(config.EXPERIMENTS, "curiosity-ledger.jsonl")
     for m in msgs:
         att = generate_attention(m["text"], mood=None, facts=[])
         d = decide(att, m["text"], graph_db=config.L2_DB)
         sc = d.get("score", 0)
+        # ★V2.4 双向耦合①（用户: "把好奇心系统和自激发系统串起来"）:
+        #   SEEKING 高分但未过线（0.3≤sc<0.5，"差一点就想说了"）→ 账本 I 轨供血
+        if not d.get("activate") and 0.3 <= sc < 0.5:
+            try:
+                from curiosity import ingest_seeking as _is
+                _is(_cl, m["text"], sc)
+            except Exception:  # noqa: BLE001
+                pass
+        # ★双向耦合②: 账本高激活缺口与事件文本重叠 → 加成（话题重现=好奇+事件共振）
+        try:
+            from curiosity import load_ledger as _ll, gap_activation as _ga
+            _bonus = 0.0
+            for _g in _ll(_cl):
+                if _overlap_gap(m["text"], _g.get("text", "")) >= 0.4:
+                    _bonus = max(_bonus, _ga(_g))
+                    break
+            if _bonus:
+                sc = round(min(1.0, sc + 0.25 * _bonus), 2)   # 好奇心参与阈值竞争
+                d = dict(d, score=sc, curiosity_bonus=_bonus)
+        except Exception:  # noqa: BLE001
+            pass
         if d.get("activate") and sc >= max_score:
             max_score = sc
             activated = (m, d)

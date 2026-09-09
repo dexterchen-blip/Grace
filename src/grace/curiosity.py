@@ -112,6 +112,13 @@ def record_gap(path: str, text: str, track: str = "D", conf: float = 0.5,
             best.setdefault("cues", []).extend([c[:40] for c in cues][:2])
         save_ledger(path, ledger)
         return best
+    # ★G1 准入分级（v1.1）: 低置信谷底缺口（conf<0.3）最多 4 条——防"完全不知道"类
+    #   洪泛占满账本，给 TOT/G2 高价值缺口腾位
+    if track == "D" and conf < 0.3:
+        low_n = sum(1 for g in ledger if g.get("track") == "D"
+                    and float(g.get("conf", 0)) < 0.3 and not g.get("resolved_ts"))
+        if low_n >= 4:
+            return None
     g = {"gap_id": f"gap-{int(now*1000)}", "track": track, "text": text[:80],
          "conf": round(min(1.0, max(0.0, conf)), 2), "cues": [c[:40] for c in (cues or [])][:2],
          "revisits": 0, "attempts": 0, "solvable": bool(solvable),
@@ -121,6 +128,18 @@ def record_gap(path: str, text: str, track: str = "D", conf: float = 0.5,
     ledger.sort(key=lambda x: -(x.get("born_ts", 0)))
     save_ledger(path, ledger[-LEDGER_CAP:])
     return g
+
+
+def ingest_seeking(path: str, text: str, score: float) -> dict | None:
+    """★2026-09-09 双向耦合（用户: "把好奇心系统和自激发系统串起来"）：
+    自激发 SEEKING 高分但未过线的事件（差一点就想说了）→ 入账本 I 轨。
+    这是"她想知道但没说出口"的天然信号源——I 轨从此有真实供血。"""
+    if not text or float(score) < 0.3:
+        return None
+    conf = round(min(0.5, 0.3 + float(score) * 0.4), 2)   # score 0.3-0.5 → conf 0.42-0.5
+    return record_gap(path, text=f"雷姆对这事有点好奇：{text[:60]}", track="I",
+                      conf=conf, cues=[text[:40]], solvable=True,
+                      next_step="找机会自然聊起")
 
 
 def mark_attempt(path: str, gap_id: str) -> None:
