@@ -98,3 +98,24 @@ gap_activation = base_salience × (1 + age_hours/24 × 0.3) × (1 - 0.4×attempt
 2. V2.4 开发：缺口账本 + 第四源 + cog/attention 集成 + 探针（attention_director 已就位）
 3. V2.4 首轮压测：对话加量 + L2 真实检索 + 注意力导向 + 好奇心——对照 V2.3.x 读四指标 + 好奇心新指标
 4. 达标后：设计稿归档 docs/，蓝图文档增补（注意力导向器 + 好奇心器官 = 第 23、24 块拼图）
+
+---
+
+## 8. 文献调研修正（v1.1，2026-09-09，依据《Grace-V2.4-好奇心文献调研-2026-09-09.md》R1-R8）
+
+> 调研覆盖 Loewenstein 1994 / Kang 2009 / Gruber 2014 / PACE 2019 / Litman 2005 I-D 双通路 /
+> Kashdan 2018 五维 / Marvin & Shohamy 2016 IPE / Itti & Baldi 2009 / Zeigarnik 2025 元分析 / RPL-TOT / LLM 内在动机 4 篇。
+> 两处记忆纠错：Gruber & Ranganath 2019 = **PACE 框架**（无"MACS/EVIG"文献）；Marvin & Shohamy 2016 发表于 JEP: General。
+
+| # | 修正 | 依据 | v1 范围 |
+|---|---|---|---|
+| R1 | **蔡格尼克激活公式作废**——2025 元分析（Ghibellini & Meier，59 篇）不支持"未解决记忆随时间增强"；**Ovsiankina 重访倾向稳健**。激活改为线索重现触发（+Δ on 重访）+ 常量显著性；时间项系数做成可消融参数（0/0.3 两档，缺口持续率探针实测后定）。条目加 next_step 字段（Masicampo & Baumeister 2011：有计划的缺口激活衰减、免反刍） | Zeigarnik 元分析 | **改账本核心公式** |
+| R2 | **置信度倒U项**：conf≈0 与 conf≈1 都低，**中等置信（TOT 态）峰值**（Kang 2009：12/19 被试峰值 0.40-0.60）。G2"记不清+部分线索"=最高优先，G1"完全无记录"=谷底。salience 字段改存 conf+线索丰富度 | Kang 2009; Metcalfe RPL 2020 | 改账本激活公式 |
+| R3 | **账本分 I/D 双轨**：I 轨（G3 新实体/G4 未接话题，探索式低压力）与 D 轨（G1/G2，剥夺式坦白式）；台词语气随轨变（I 随意聊起/D 坦白记不清）；每日 1 问预算主要约束 D 轨；满足 mood 事件分型（I=兴趣愉悦，D=如释重负） | Litman 2005 | 改账本+触发源 |
+| R4 | **好奇状态附带记忆增强**：top1 缺口激活>阈值时置 curiosity_state=true 至解决/超时，窗口内新摄入 L2/L3 编码加成（检索+1/优先入 L0 候选） | Gruber 2014 Neuron | **进 v1 范围**（原未含，成本低实证强） |
+| R5 | **满足回路改 IPE + PACE 环回喂**：满足强度=实际满意度−缺口预期（非固定值）；答案中的新实体自动过 G1-G4 检测——好奇心自我续期，满足回路从终点变中继 | Marvin & Shohamy 2016; PACE 2019 | 改满足回路 |
+| R6 | **可解性门控**：条目带 solvable 标志，不可解缺口激活只降不升（防执念噪音，比 attempts 更早介入） | Loewenstein 1994 | 改账本 |
+| R7 | **appraisal 显式化**：第四触发源出队前，缺口语境+主人当前情绪（ToM）→ 好奇（发出）或压回暗注意力 cog。ToM 一票否决升级为打分制 | PACE 2019; Kashdan 2018 | 改触发源 |
+| R8 | **不改**：四信号架构 ✓ 每日 1 问预算 ✓（error-conditioned 内在奖励学理背书）账本 cap 12 ✓ Bayesian surprise 量化 G3 → v2 | LLM 内在动机 4 篇（2025） | 确认 |
+
+**探针修正**：缺口持续率探针因 R1 改测"线索触发重访率"；新增"倒U形态验证"探针（实测 Grace 的激活-置信曲线峰值位置是否在 0.4-0.6）。
