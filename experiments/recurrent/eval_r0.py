@@ -42,7 +42,14 @@ def _has_identity(ans: str) -> bool:
 
 def _probe_prompt(tokenizer, q: str) -> str:
     msgs = [{"role": "system", "content": PERSONA_SYS}, {"role": "user", "content": q}]
-    return tokenizer.apply_chat_template(msgs, add_generation_prompt=True, tokenize=False)
+    # ★bug修复: R0 首跑的"答前复述问题/泄漏系统提示"实为 thinking 相未关
+    #   (K=1 也回声=基线生成设置问题, 非循环引入)——与 8100 生产设置对齐
+    try:
+        return tokenizer.apply_chat_template(msgs, add_generation_prompt=True,
+                                              tokenize=False, enable_thinking=False)
+    except TypeError:
+        return tokenizer.apply_chat_template(msgs, add_generation_prompt=True,
+                                              tokenize=False)
 
 
 def _write_md(r: dict, path: str) -> None:
@@ -175,8 +182,9 @@ def main() -> None:
     }
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=1)
-    _write_md(report, REPORT_MD)
-    print(f"[R0] 报告: {a.out} / {REPORT_MD}")
+    _md = a.out.replace(".json", ".md")
+    _write_md(report, _md)
+    print(f"[R0] 报告: {a.out} / {_md}")
     print(f"[R0] 框架浓度: 能力={report['framework_density']['能力浓度']} "
           f"行为={report['framework_density']['行为浓度']}")
 

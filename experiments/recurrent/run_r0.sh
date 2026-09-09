@@ -21,7 +21,8 @@ if [ "${1:-}" != "--execute" ]; then
   exit 0
 fi
 
-echo "[run_r0] 真实模式: 停 8100 → R0 评测 → 恢复 8100"
+shift   # 丢弃 --execute, 剩余参数透传给 eval_r0.py (--k/--start/--end/--out)
+echo "[run_r0] 真实模式: 停 8100 → R0 评测 → 恢复 8100  (变体参数: $*)"
 RESTORE=0
 
 stop_8100() {
@@ -51,7 +52,7 @@ restore_8100() {
 trap restore_8100 EXIT
 stop_8100
 
-HF_HUB_OFFLINE=1 "$PY" "$HERE/eval_r0.py" --model "$MODEL"
+HF_HUB_OFFLINE=1 "$PY" "$HERE/eval_r0.py" --model "$MODEL" "$@"
 rc=$?
 echo "[run_r0] eval 退出码: $rc"
 exit $rc
