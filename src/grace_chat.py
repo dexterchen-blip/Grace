@@ -548,6 +548,22 @@ def handle_grace_chat(body: dict) -> tuple[int, dict]:
         reply = _monitor(reply)
         if reply and _wm_echo_guard(reply):
             reply = ""
+    # ★V2.5 S1 数据采集: 器官中介轨迹日志（本能蒸馏原料——真实运行专属，铁律合规）
+    try:
+        if reply:
+            _wm_entries = (json.load(open(os.path.join(REPO, "exchange", "grace",
+                                                    "day-memory.json"), encoding="utf-8"))
+                           ).get("entries", [])
+            _anns_now = [t2c for t2c in t2 if str(t2c).startswith("（注意力提示")]
+            with open(os.path.join(REPO, "exchange", "grace", "trajectory-journal.jsonl"),
+                      "a", encoding="utf-8") as _jf:
+                _jf.write(json.dumps({"ts": time.time(), "user_text": user_text[:200],
+                                      "reply": reply[:200],
+                                      "wm_entries": _wm_entries[-12:],
+                                      "annotations": _anns_now,
+                                      "l2_hits": bool(l2)}, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001 —— 轨迹日志失败不影响对话
+        pass
     meta = {"plugin": plugin,
             "monitor": ("filtered" if (raw.strip() and not reply) else
                         "repeat-guard" if reply == "" and raw.strip() else "pass"),
