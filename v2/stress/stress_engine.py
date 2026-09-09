@@ -928,6 +928,7 @@ def train_27b(samples: list[str], adapter_name: str,
             print(f"  ↪ EWC 突触巩固: {'✅' if rc.returncode == 0 else '❌'} {rc.stdout.strip()[-60:]}", flush=True)
         ok = ok and rc.returncode == 0
     return {"ok": ok, "samples": _ds_n, "adapter": adapter,
+            "log_tail": (r.stdout + r.stderr)[-400:],  # ★2026-09-09 补: B 分支失败原因透传(此前被吞)
             "log_tail": (r.stdout + r.stderr)[-400:]}
 
 
@@ -1195,7 +1196,7 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
             except Exception as _le:  # noqa: BLE001
                 # ★ P0-2(2026-08-31): 检索降级显式标注——llama_cpp 缺失时走"记不清"诚实路径
                 #   机制②'提取抑制的极端形态: 检索不可用 → 她"记不清"(可观测,不静默)
-                _ctx = f"（检索降级:记忆不可用,雷姆记不清）{str(_le)[:30]}"
+                _ctx = "（检索降级:记忆不可用,雷姆记不清）"  # ★2026-09-09 错误细节只进日志不进 prompt(她曾把 No module 念出来)
                 try:
                     prompt = tok.apply_chat_template(
                         [{"role": "system", "content": sys_p},
