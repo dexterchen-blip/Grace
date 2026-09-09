@@ -273,18 +273,19 @@ def _l3_memory(user_text: str) -> str:
         return ""
 
 
-def _day_memory() -> str:
-    """★2026-09-09 KV Tier 1 · 当日工作记忆（用户: "一天的数据融进 KV, 睡眠处理完清空"）。
-    读 proactive_watch 10min 节拍写的 day-memory.json 快照（当日事件滚动摘要, cap 24 条）。
-    只读不扫 L0（保证两次调用之间字节稳定→前缀可复用）；隔日自动失效=睡眠巩固后的清空语义。"""
+def _day_memory() -> dict:
+    """★2026-09-09 KV Tier 1 · 当日工作记忆 v3（神经记忆版）。
+    读 proactive_watch 10min 节拍写的 day-memory.json（entries 带学出来的 nov 新奇度）。
+    只读不扫 L0（保证两次调用之间字节稳定→前缀可复用）；隔日自动失效=睡眠巩固后的清空语义。
+    返回 {}（无快照/过期）或 {"date","digest","entries":[{t,tag,nov}]}。"""
     try:
         d = json.load(open(os.path.join(REPO, "exchange", "grace", "day-memory.json"),
                            encoding="utf-8"))
         if d.get("date") != time.strftime("%Y-%m-%d"):
-            return ""
-        return d.get("digest", "")[:1200]
+            return {}
+        return d
     except Exception:  # noqa: BLE001 —— 无快照=无工作记忆, 不影响对话
-        return ""
+        return {}
 
 
 def _wm_echo_guard(reply: str, thresh: float = 0.55) -> bool:
@@ -323,17 +324,17 @@ def grace_system_prompt(user_text: str) -> str:
     inner = _inner_world()
     base = f"{_REM_PERSONA}\n\n{_EXPRESS_RULES}"
     if day:
-        # ★2026-09-09 注意力导向器(用户: "几层记忆系统应用得好可以形成明确的注意力导向"):
-        #   WM 条目不再等权平铺——按激活值(新近×显著×焦点关联)分【焦点区/背景区】,
-        #   冲突信号在 T2 预注注意力提示。ACT-R: 记忆激活即注意力。
+        # ★2026-09-09 注意力导向器消费神经记忆: entries 带学出来的 nov 新奇度
+        #   （导向器照常负责冲突标注/方向标签/焦点背景渲染）
         try:
             from attention_director import direct as _adirect, render_blocks as _render_blocks
-            _entries = [l.strip().lstrip("·•").strip() for l in day.splitlines() if l.strip()]
+            _entries = day.get("entries") or [
+                l.strip().lstrip("·•").strip() for l in (day.get("digest") or "").splitlines() if l.strip()]
             _d = _adirect.direct(user_text, _entries)
             _blk = _render_blocks(_d)
             _anns = list(_d.get("annotations") or [])
         except Exception:  # noqa: BLE001 —— 导向器故障退回平铺(可用性优先)
-            _blk = day
+            _blk = day.get("digest", "")
             _anns = []
         if _blk:
             base += (f"\n（今天·工作记忆——你和主人之间已经发生的事。回应时只用你自己的话，"
@@ -350,6 +351,7 @@ def grace_system_prompt(user_text: str) -> str:
     l2 = _l2_search(user_text)
     if l2:
         t2.append(l2)
+    mem = _l3_memory(user_text)
     if mem:
         t2.append(mem)
     t2.extend(_anns)  # ★注意力导向: 冲突信号预注(身份/称呼以事实为准)

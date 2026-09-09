@@ -287,12 +287,31 @@ def run(dry: bool = False) -> dict:
         st.setdefault("day_events", []).append({"t": m["text"][:48]})
     st["day_events"] = st.get("day_events", [])[-24:]
     try:
-        json.dump({"date": today,
-                   "digest": "\n".join(f"· {e['t']}" for e in st.get("day_events", []))},
-                  open(os.path.join(config.EXPERIMENTS, "day-memory.json"), "w",
-                       encoding="utf-8"), ensure_ascii=False, indent=1)
-    except Exception:  # noqa: BLE001
-        pass
+        _dm = os.path.join(config.EXPERIMENTS, "day-memory.json")
+        # ★V2.4 工作记忆 v3: 神经记忆（kNN 新奇度）优先，失败回退规则版
+        _evs = []
+        for e in st.get("day_events", []):
+            m = re.match(r"^\[(主人说|旁听)\]\s*(.*)$", e["t"])
+            _evs.append({"t": m.group(2) if m else e["t"], "tag": m.group(1) if m else ""})
+        _r = subprocess.run(
+            ["/Users/cz/.workbuddy/binaries/python/envs/llama-cpp/bin/python3",
+             os.path.join(os.path.dirname(os.path.abspath(__file__)), "neural_memory.py"),
+             "update", "--date", today, "--events", json.dumps(_evs, ensure_ascii=False),
+             "--out", _dm],
+            capture_output=True, text=True, timeout=120, cwd=config.REPO,
+            env={**os.environ, "HF_HUB_OFFLINE": "1"})
+        if _r.returncode != 0 or not os.path.isfile(_dm):
+            raise RuntimeError(_r.stderr[-120:])
+        print(f"[neural-wm] {_r.stdout.strip()[:80]}")
+    except Exception as _ne:  # noqa: BLE001 —— 神经记忆失败 → 规则版 digest 回退
+        try:
+            json.dump({"date": today,
+                       "digest": "\n".join(f"· {e['t']}" for e in st.get("day_events", []))},
+                      open(os.path.join(config.EXPERIMENTS, "day-memory.json"), "w",
+                           encoding="utf-8"), ensure_ascii=False, indent=1)
+        except Exception:  # noqa: BLE001
+            pass
+        print(f"[neural-wm] 回退规则版: {str(_ne)[:60]}")
     # ★暗注意力日间增量: 新消息先入 pending, 再判背景念头触发（独立于开口窗口——想, 不等于打扰）
     for m in msgs:
         st.setdefault("pending", []).append({"t": m["text"][:80], "v": m["sentiment"]})

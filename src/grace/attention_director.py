@@ -49,9 +49,15 @@ def direct(user_text: str, wm_entries: list, focus_hint: str = "") -> dict:
     scored = []
     n = max(1, len(wm_entries))
     for i, e in enumerate(wm_entries):
-        text, sal = (e if isinstance(e, tuple) else (e, None))
+        nov = None
+        if isinstance(e, dict):                    # ★V2.4 神经记忆: 条目带学出来的 nov
+            text, nov, sal = e.get("t", ""), e.get("nov"), None
+            tag0 = e.get("tag", "")
+        else:
+            text, sal = (e if isinstance(e, tuple) else (e, None))
+            tag0 = ""
         m = _TAG.match(text or "")
-        tag = m.group(1) if m else ""
+        tag = m.group(1) if m else tag0
         t = _TAG.sub("", text or "").strip()
         if not t:
             continue
@@ -59,8 +65,12 @@ def direct(user_text: str, wm_entries: list, focus_hint: str = "") -> dict:
         if focus_hint:
             rel = max(rel, _overlap(t, focus_hint))
         recency = (i + 1) / n                      # 列表位置≈时间顺序，越靠后越新
-        act = round(0.4 * recency + 0.3 * (0.35 if sal is None else abs(sal) + 0.2) + 0.3 * rel, 3)
-        scored.append({"text": t, "act": act, "rel": rel, "tag": tag})
+        if nov is not None:
+            sal_term = 0.2 + 0.8 * nov             # 学出来的新奇度替换手设显著度
+        else:
+            sal_term = 0.35 if sal is None else abs(sal) + 0.2
+        act = round(0.4 * recency + 0.3 * sal_term + 0.3 * rel, 3)
+        scored.append({"text": t, "act": act, "rel": rel, "tag": tag, "nov": nov})
     scored.sort(key=lambda x: -x["act"])
     # 焦点区: 与当前消息相关（rel≥0.25）或主人亲口说的，取 top3；旁听不进焦点
     focus = [s for s in scored if (s["rel"] >= 0.25 or s["tag"] == "主人说")][:3]
