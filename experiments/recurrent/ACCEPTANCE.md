@@ -29,7 +29,7 @@
 
 ## 3. 关键技术事实（已核实源码/配置，非猜测）
 
-- fused-rem-v61 = **Qwen3.5 混合注意力**：64 层 = 48 线性注意力 + 16 全注意力，原生周期 `[3×linear + 1×full]`（`full_attention_interval=4`，config `layer_types` 实读）
+- fused-rem-v61 = **Qwen3.8-27B（架构族 qwen3_5，混合注意力）**：64 层 = 48 线性注意力 + 16 全注意力，原生周期 `[3×linear + 1×full]`（`full_attention_interval=4`，config `layer_types` 实读）
 - **默认循环段 = 中段一个原生周期 [32,36)（linear/linear/linear/full）×K=2**——按架构自己的重复单元循环，保持线性:全注意力比例不变；层位 64→68，权重仍 64 层
 - mlx_lm `make_cache()` 遍历 `self.layers` 按层位建缓存（线性层 ArraysCache / 全注意力 KVCache）——**层表重排后缓存自动正确**（已核实 `mlx_lm/models/cache.py` 与 `qwen3_5.py:304`）
 - 层表是普通 Python list（`Qwen3Model.__init__` 列表推导）——重排=纯内存引用操作，**重新 load 即完全还原**
