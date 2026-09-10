@@ -1623,6 +1623,13 @@ def main():
         day = rec["day"]
         if day <= resume:
             continue                          # 已摄入，跳过
+        # ★2026-09-09 退出点(用户: "做好随时停止的准备, 每~15分钟一个热停点"):
+        #   每天边界检查停止旗标——天粒度天然退出点(~10-15min/天), 优雅退出 rc=0,
+        #   已完成天按 L0 水位自动断点续跑(_resume_from), final 报告照常写。
+        if os.path.isfile(os.path.join(STRESS_ROOT, ".stop-requested")):
+            logln(f"  [checkpoint] 收到停止请求——day {day} 前优雅退出"
+                  f"（已完成 {day-1} 天, 重启自动续跑）")
+            break
         _ensure_model(day)                    # ★2026-09-05 模型驱动 ToM: 当日生效 adapter 就位
         msgs = rec["messages"]
         # ① 当天对话 → L0
