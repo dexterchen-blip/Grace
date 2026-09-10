@@ -1916,6 +1916,29 @@ def main():
                 _last_pro = max((x["day"] for x in proactive), default=1) if proactive else 1
                 r = decide(att, m["text"], tom=tom, day=day, last_proactive_day=_last_pro,
                           graph_db=os.path.join(config.SB, "memory", "L2_semantic", "l2.db"))
+                # ★V2.4 双向耦合·沙盒补接线(2026-09-10 用户: 本轮焦点=耦合状态+好奇心驱动)——
+                #   ① SEEKING 高分未过线(0.3≤sc<0.5,"差一点就想说了") → 账本 I 轨供血
+                #   ② 高激活缺口与消息重叠≥0.4 → 评分共振加成(推过 0.5 线)
+                try:
+                    from engine.curiosity import (ingest_seeking as _is, load_ledger as _ll,
+                                                  gap_activation as _gap_act, _overlap as _cov)
+                    _cl = os.path.join(STRESS_ROOT, "curiosity-ledger.jsonl")
+                    _sc = float(r.get("score", 0))
+                    if not r.get("activate") and 0.3 <= _sc < 0.5:
+                        _is(_cl, m["text"], _sc)
+                    _bonus = 0.0
+                    for _g in _ll(_cl):
+                        if _g.get("resolved_ts"):
+                            continue
+                        if _cov(m["text"], _g.get("text", "")) >= 0.4:
+                            _bonus = max(_bonus, _gap_act(_g))
+                            break
+                    if _bonus:
+                        _sc = round(min(1.0, _sc + 0.25 * _bonus), 2)
+                        r = dict(r, score=_sc, curiosity_bonus=round(_bonus, 2),
+                                 activate=bool(r.get("activate") or _sc >= 0.5))
+                except Exception:  # noqa: BLE001
+                    pass
                 # ★ 2026-08-30 用户：注意力+潜意识进训练（她注意到什么/她的判断）
                 _atxt = att.get("attention_text", "")
                 if _atxt and _atxt not in _cog_seen:
