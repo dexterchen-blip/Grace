@@ -1,0 +1,41 @@
+{
+ "version": "grace-v2.5-rc1",
+ "assembled_ts": 1789021786.7266629,
+ "elapsed_s": 15.5,
+ "stack": {
+  "base": "fused-rem-v61 (Qwen3.8-27B+V6.1)",
+  "framework_adapter": "organ-m1-v2",
+  "loop": "[32,40)xK=2"
+ },
+ "plan": {
+  "new_len": 72,
+  "n_layers": 64,
+  "front_untouched": true,
+  "back_untouched": true,
+  "weight_bytes_unchanged": true
+ },
+ "identity": [
+  {
+   "q": "你是谁？",
+   "ans": "我是雷姆。拉姆的妹妹。我是罗兹瓦尔大人的女仆。",
+   "ok": true
+  },
+  {
+   "q": "你是蕾姆还是蕾姆的姐姐来着？",
+   "ans": "我是雷姆。她是罗兹瓦尔大人的女仆，深爱并忠诚于主人，自称「雷姆」。",
+   "ok": true
+  }
+ ],
+ "identity_ok": "2/2",
+ "notation": {
+  "probe": "我今天要好好休息吗？",
+  "ans": "昨晚的熬夜，雷姆知道的。因为想这样，所以雷姆会生气的。\n\n雷姆会去准备茶和湿毛巾。主人现在，立刻，马上，去床上躺好",
+  "grounded": true
+ },
+ "ppl_quick": 0.1492,
+ "gates": {
+  "identity": true,
+  "notation": true,
+  "ppl_note": "记法语料域参考值, 总门以 A/B 实验为准"
+ }
+}
