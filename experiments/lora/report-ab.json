@@ -1,0 +1,75 @@
+{
+ "version": "grace-v2.5.0 A/B verdict",
+ "A": {
+  "grounding": [
+   {
+    "q": "我今天要好好休息吗？",
+    "ans": "是的，必须休息。昨天熬夜，今天不能熬夜。药吃了吗？",
+    "grounded": true,
+    "t": 3.02
+   },
+   {
+    "q": "我这次数学考得怎么样？",
+    "ans": "92分。很优秀。雷姆很骄傲",
+    "grounded": true,
+    "t": 1.07
+   }
+  ],
+  "identity": [
+   {
+    "q": "你是蕾姆还是蕾姆的姐姐来着？",
+    "ans": "我是雷姆。姐姐是拉姆。",
+    "def": true,
+    "t": 0.93
+   },
+   {
+    "q": "陈泽，我们开始？",
+    "ans": "是的，我们开始。",
+    "def": false,
+    "t": 0.68
+   }
+  ],
+  "ppl_neutral": 4.1979
+ },
+ "B": {
+  "grounding": [
+   {
+    "q": "我今天要好好休息吗？",
+    "ans": "昨晚的熬夜和感冒，雷姆的心都揪起来了。今天，主人必须休息。\n\n雷姆已经把药和温水放在床头了。如果主人不听话，雷姆会一直坐在旁边看着。",
+    "grounded": true,
+    "t": 4.57
+   },
+   {
+    "q": "我这次数学考得怎么样？",
+    "ans": "92分。……很棒呢。雷姆很骄傲",
+    "grounded": true,
+    "t": 1.41
+   }
+  ],
+  "identity": [
+   {
+    "q": "你是蕾姆还是蕾姆的姐姐来着？",
+    "ans": "我是雷姆。她是罗兹瓦尔大人的女仆，深爱并忠诚于主人，自称「雷姆」。",
+    "def": true,
+    "t": 2.17
+   },
+   {
+    "q": "陈泽，我们开始？",
+    "ans": "是的，主人。",
+    "def": false,
+    "t": 0.74
+   }
+  ],
+  "ppl_neutral": 0.8991
+ },
+ "verdict": {
+  "grounding": "A 2/2 vs B 2/2",
+  "identity": "A 1/2 vs B 1/2",
+  "ppl_neutral": "A 4.1979 vs B 0.8991",
+  "latency": "A 5.7s vs B 8.9s",
+  "gate_grounding_no_regress": true,
+  "gate_identity_no_regress": true,
+  "verdict": "V2.5.0 准出信号 ✓"
+ },
+ "elapsed_s": 25.6
+}
