@@ -56,6 +56,15 @@ def _norm(t: str) -> str:
     return re.sub(r"[\s，。,.:：;；!！?？@~～]+", "", t or "")
 
 
+_PII_PAT = re.compile(r"\d{7,}")
+_JUNK_PAT = re.compile(r"http|www\.|【|推荐码|- \[ \]|加一下我的微信")
+
+
+def _clean_pii(text: str) -> str:
+    """★v1.1 PII 脱敏：≥7 位数字串只留前 3 位（手机号/证件号明文入账实测）。"""
+    return _PII_PAT.sub(lambda m: m.group()[:3] + "****", text or "")
+
+
 def _overlap(a: str, b: str) -> float:
     na, nb = _norm(a), _norm(b)
     if len(na) < 2 or len(nb) < 2:
@@ -94,6 +103,8 @@ def record_gap(path: str, text: str, track: str = "D", conf: float = 0.5,
     """记录/更新缺口。与既有条目重叠≥0.5 视为同一缺口 → 算一次线索重现（R1 +Δ）。"""
     ledger = load_ledger(path)
     now = _now()
+    text = _clean_pii(text or "")          # ★v1.1 PII 脱敏——数字串≥7位打码(手机号明文入账实测)
+    cues = [_clean_pii(c) for c in (cues or [])]
     best, best_ov = None, 0.0
     for g in ledger:
         if g.get("resolved_ts"):
@@ -135,6 +146,11 @@ def ingest_seeking(path: str, text: str, score: float) -> dict | None:
     自激发 SEEKING 高分但未过线的事件（差一点就想说了）→ 入账本 I 轨。
     这是"她想知道但没说出口"的天然信号源——I 轨从此有真实供血。"""
     if not text or float(score) < 0.3:
+        return None
+    # ★v1.1 I 轨质量门(本轮实测: spam/「哈哈」混入——SEEKING 0.3-0.5 带太宽):
+    #   长度≥12 + 垃圾模式(链接/推荐码/任务列表标记/加微信)一票否决
+    t = text.strip()
+    if len(t) < 12 or _JUNK_PAT.search(t):
         return None
     conf = round(min(0.5, 0.3 + float(score) * 0.4), 2)   # score 0.3-0.5 → conf 0.42-0.5
     return record_gap(path, text=f"雷姆对这事有点好奇：{text[:60]}", track="I",

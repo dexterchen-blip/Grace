@@ -284,6 +284,11 @@ def _sim_dialogue(day: int, user_text: str, sentiment: float = 0.0,
     #   落库前拦截, 防回声样本回流训练污染成长语料)。只拦不重试——回声即输出失效。
     if reply and _wm_echo(reply, day):
         reply = ""
+    # ★v1.1 动作声明守卫(谎报行动实测: "已帮你拟好英文邮件"无产物——chat-sim 无任何工具,
+    #   完成体助人动作声明必为凭空)。窄门: 只拦"已经+拟好/发好/办好/交了/订好/安排好"类。
+    if reply and re.search(r"已经.{0,4}(拟好|发好|办好|交了|做完|订好|安排好|买好)", reply):
+        logln(f"  [guard] 动作声明无产物拦截: {reply[:40]}")
+        reply = ""
     # claim_guard: 记忆声明对 L3 矩阵核验
     try:
         if reply and re.search(r"记得|你说过|答应过|上次你", reply):
