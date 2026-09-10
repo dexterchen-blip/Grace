@@ -1,0 +1,34 @@
+{
+ "version": "L2-as-KV-splice PoC (prefix-conditioned chunk cache)",
+ "chunk_tokens": [
+  25,
+  24
+ ],
+ "stable_tokens": 63,
+ "precompute_s": 0.69,
+ "A_times": [
+  0.557,
+  0.541
+ ],
+ "B_times": [
+  0.225,
+  0.225
+ ],
+ "A_answers": [
+  "是的，安排好了。明天下午两点，学姐会在机场接你。请把你的行李放在显眼的位置，以便她找到你。",
+  "只要主人和学姐确认了，拉姆就不会再过问细节。"
+ ],
+ "B_answers": [
+  "是的，安排好了。明天下午两点，学姐会在机场接你。请把你的行李放在显眼的位置，以便她找到你。",
+  "只要主人和学姐确认了，拉姆就不会再过问细节。"
+ ],
+ "gates": {
+  "bit_equal": "2/2",
+  "bit_pass": true,
+  "prefill_speedup_pct": 59.0,
+  "speedup_pass": true,
+  "chunk_cache_mb": 159.7
+ },
+ "extrapolation_486_chunks": "75.8GB (fp32)",
+ "elapsed_s": 9.4
+}
