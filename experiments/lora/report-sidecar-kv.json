@@ -1,0 +1,46 @@
+{
+ "version": "sidecar→KV direct-write verdict (V2.5 完全体裁决)",
+ "decision": "NO-GO",
+ "confidence": "high",
+ "decided_by": "automation 2026-09-10 06:00 PDT (user asleep, autonomous verdict)",
+ "input": {
+  "source": "05:00 automation product /local-ai-agent/exchange/grace/graph-sidecar-report.json (mtime 09-10 05:01, run OK, no rerun needed)",
+  "pairs": 8626,
+  "train": 7333,
+  "holdout": 1293,
+  "epochs": 8,
+  "sidecar_dim": 1024,
+  "train_fidelity": 0.361,
+  "top1": 0.487,
+  "top3": 0.509,
+  "random_baseline": 0.00026,
+  "unique_targets": 3784,
+  "latency_ms_p50": 0.24,
+  "elapsed_s": 79.7
+ },
+ "gates": [
+  {"gate": "train_fidelity >= 0.70", "actual": 0.361, "pass": false, "note": "硬指标失败，差距 0.34（非临界）"},
+  {"gate": "top3 >= 0.15", "actual": 0.509, "pass": true},
+  {"gate": "top3 >= 30x random_baseline", "actual": "1958x", "pass": true},
+  {"gate": "pairs >= 800", "actual": 8626, "pass": true}
+ ],
+ "no_go_reasons": [
+  "train_fidelity 0.361 远低于硬门槛 0.70：recall 向量与目标向量相对误差 64%，直写 KV value 意味着注入 1/3 信号 + 2/3 干扰混合——注入的不是图谱是噪声",
+  "结构性超容量，非调参可救：d=1024 线性联想记忆（W 1024x1024）承载 7333 训练对 = 7.2x 过载；delta-rule 无压缩编码，加 epoch/调 eta 都到不了 0.70",
+  "mood 分区数据饥饿：8626 对中 mood 边仅 6 条（rel 4842 + ent 3778 + mood 6）；<mood> 槽位是 KV 直连的首要目标，图谱里几乎无 mood 内容可注入——即使 fidelity 达标也无 mood 信号源"
+ ],
+ "participation_counts": {"mood": 6, "rel": 4842, "ent": 3778},
+ "positive_findings": [
+  "top3 0.509 = 1958x random：邻域召回结构完好，sidecar 作为图谱查询向量快速路径（N3 原定位，索引留外面）仍然成立",
+  "p50 延迟 0.24ms：比 sqlite 图遍历+bm25 混检快若干个数量级",
+  "rc2/M3 已证 KVCache 槽位写读位级等价——插座在，缺的是合格的内容生产者"
+ ],
+ "sub_analysis": "ArraysCache(48 线性层递归状态)与 KVCache(16 全注意力层)机制不同：value 直写只适用后者；<sub> 需对递归状态做闭式叠加/MEMIT 式更新，无槽位语义，属 S 线远期（详见用户报告）",
+ "machine_state": {"port_8100": "online (27B day-model, launchd)", "port_8200": "offline", "dual_residency": "none", "prototype_built": false},
+ "revival_paths": [
+  "分区独立 sidecar（mood/rel/ent 各一 W）+ 剔除 ent 恒等自反对低价值负载",
+  "K 侧随机投影扩维至 4096+（rel 4842 对仍 1.2x 过载，需 8192 或改 top-k 检索用法）",
+  "<mood> 直连改走 M2 闭式转向（均值差，已定案 T1 路线），不依赖 sidecar fidelity；等真实 mood 轨迹数据"
+ ],
+ "elapsed_note": "NO-GO 路径：未构建原型（eval_sidecar_kv.py 未创建），未触碰模型服务与任何现有文件"
+}

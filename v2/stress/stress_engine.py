@@ -42,6 +42,14 @@ START_DAY = datetime(2026, 8, 28)   # 入学后（虚拟日历）
 #   看点：叙述体/被吩咐先想后说 是否被权重内化；与 v5 同族(14GB 4bit)可直替。
 MAIN_MODEL = "/Users/cz/WorkBuddy/watch/rem-v6-lora/models/fused-rem-v61"
 
+# ★2026-09-10 V2.5 验收轮组装态（GRACE_V25=1 生效）:
+#   受测体 = fused-rem-v61 + 框架 adapter organ-m1-v2 + 循环段 [32,40)×K=2（A/B B 侧全栈）。
+#   日训 resume 链从 organ-m1-v2 起步——演化轨携带框架记法向前（框架不单独冻结，由轮内
+#   身份传感器监督；drift 即本轮测量对象之一，15 分钟可重训）。
+GRACE_V25 = os.environ.get("GRACE_V25") == "1"
+V25_ADAPTER = "/Users/cz/WorkBuddy/watch/ai-sandbox-stress/experiments/lora/adapters/organ-m1-v2"
+V25_LOOP = (32, 40, 2)   # R0 定案形态（PPL 0.9792 负退化）
+
 
 def day_ts(day: int, h: int = 10) -> float:
     return (START_DAY + timedelta(days=day - 1, hours=h - 10)).timestamp()
@@ -684,10 +692,14 @@ def train_27b(samples: list[str], adapter_name: str,
         sys_p = _BASE
 
     def to_chat(text: str) -> str:
+        # ★2026-09-11 PII 脱敏进训练侧——判官首战实锤 27/300=9% 样本含真实邮箱/电话进了权重
+        #   (此前 _clean_pii 只挂好奇心 I 轨, 训练样本管线裸奔; 邮箱+7位以上数字串打码)
+        _t = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "[邮箱已脱敏]", text)
+        _t = re.sub(r"\d{7,}", "[号码已脱敏]", _t)
         return json.dumps({"messages": [
             {"role": "system", "content": sys_p},
             {"role": "user", "content": "（与主人的日常对话）"},
-            {"role": "assistant", "content": text},
+            {"role": "assistant", "content": _t},
         ]}, ensure_ascii=False) + "\n"
 
     with open(os.path.join(ds_dir, "train.jsonl"), "w", encoding="utf-8") as f:
@@ -1073,6 +1085,9 @@ def sample_persona(adapter_name: str, day: int, msgs: list | None = None) -> lis
     from mlx_lm.sample_utils import make_sampler
     try:
         model, tok = load(MAIN_MODEL, adapter_path=adapter)
+        if GRACE_V25:
+            from loop_v25 import apply_loop as _al_v25
+            _al_v25(model, *V25_LOOP)   # 人格采样与主循环同栈（V2.5 组装态一致性）
     except Exception as e:  # noqa: BLE001
         return [{"error": str(e)}]
     sampler = make_sampler(temp=0.7)   # 2026-08-28：temp 0.7 减少复述捷径
@@ -1592,16 +1607,27 @@ def main():
 
     def _ensure_model(day_now: int):
         nonlocal mmodel, mtok, _loaded_adapter
-        want = _latest_adapter(adapter_base, day_now) or "__base__"
+        # ★V2.5: 无日训 adapter 时回退框架 adapter（organ-m1-v2）而非裸 base——组装态形态
+        want = _latest_adapter(adapter_base, day_now) or ("__v25__" if GRACE_V25 else "__base__")
         if want == _loaded_adapter and mmodel is not None:
             return
         if mmodel is not None:
             mmodel = None   # ★2026-09-05 赋值 None 而非 del——del 删 enclosing 绑定会让后续 nonlocal 访问炸 free variable
             mtok = None
-        kw = {"adapter_path": os.path.join(config.ADAPTERS, want)} if want != "__base__" else {}
+        if want == "__v25__":
+            kw = {"adapter_path": V25_ADAPTER}
+        elif want != "__base__":
+            kw = {"adapter_path": os.path.join(config.ADAPTERS, want)}
+        else:
+            kw = {}
         mmodel, mtok = _mlx_load(MAIN_MODEL, **kw)
+        if GRACE_V25:
+            from loop_v25 import apply_loop as _al_v25
+            _rep_v25 = _al_v25(mmodel, *V25_LOOP)
+            logln(f"  [V2.5] 循环段挂载 [{V25_LOOP[0]},{V25_LOOP[1]})×{V25_LOOP[2]} "
+                  f"→ 层数 {_rep_v25['new_len']} 断言 {_rep_v25['struct_ok']}")
         _loaded_adapter = want
-        logln(f"  [ToM-model] 已加载 {'base' if want == '__base__' else want}（模型驱动 ToM）")
+        logln(f"  [ToM-model] 已加载 {'V2.5组装态' if want == '__v25__' else ('base' if want == '__base__' else want)}（模型驱动 ToM）")
 
     def _release_model(reason: str = ""):
         """★2026-09-05 爆内存修复(20:48 整机爆内存重启教训): D4 引入'主循环常驻模型(15.5G)
@@ -2149,6 +2175,8 @@ def main():
                 #   每 reset_interval 天从 base 冷启动(不续训),外挂记忆保留 → 持续可学习,治 30 天寿命
                 _reset = args.reset_interval > 0 and (day % args.reset_interval == 0)
                 prev = None if _reset else _latest_adapter(adapter_base, day)
+                if GRACE_V25 and prev is None and not _reset:
+                    prev = "organ-m1-v2"     # ★V2.5: 演化轨从框架 adapter 起步（组装态地基）
                 if _reset:
                     logln(f"  ↪ 神经新生重置(day {day}): 从 base 冷启动,外挂记忆保留")
                 r = train_27b(samples, adapter_name, prev_adapter=prev,
